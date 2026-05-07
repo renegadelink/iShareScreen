@@ -1,0 +1,52 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "isharescreen"
+version = "0.1.0"
+description = "Cross-platform client for Apple's macOS Screen Sharing High Performance mode"
+readme = "README.md"
+requires-python = ">=3.10"
+license = "AGPL-3.0-or-later"
+license-files = ["LICENSE"]
+authors = [{ name = "iShareScreen contributors" }]
+keywords = ["screen-sharing", "vnc", "macos", "hevc", "srtp", "remote-desktop"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: End Users/Desktop",
+    "Operating System :: MacOS :: MacOS X",
+    "Operating System :: POSIX :: Linux",
+    "Operating System :: Microsoft :: Windows",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Multimedia :: Video",
+    "Topic :: System :: Networking",
+]
+dependencies = [
+    # Core protocol + media
+    "cryptography>=42.0",
+    "pycryptodome>=3.20",
+    "av>=12.0",
+    "numpy>=1.26",
+    # Native desktop viewer (wgpu + glfw native window)
+    "wgpu>=0.31",
+    "rendercanvas>=2.6",
+    "glfw>=2.10",
+    # Audio playback (PortAudio bindings)
+    "sounddevice>=0.5",
+]
+
+[project.scripts]
+iss = "isharescreen.cli:main"
+isharescreen = "isharescreen.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/renegadelink/iShareScreen"
+Issues = "https://github.com/renegadelink/iShareScreen/issues"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/isharescreen"]
