@@ -42,8 +42,9 @@ from .input import InputController
 from .media.aac_eld import AacEldDecoder, make_aac_eld_decoder
 from .media.hevc import HevcDecoder
 from .media.avc import AvcDecoder
-from .media.nalu import first_donl, reassemble_group
+from .media.nalu import first_donl, reassemble_group, reassemble_group_h264, is_avc_config
 from .media.avc_nalu import reassemble_h264
+from .media.registry import resolve_codec
 from .media.quality_gate import TileVisState
 from .. import __version__ as _iss_version
 from .control import ControlServer
@@ -992,48 +993,63 @@ class Session:
         # actually works on each platform.
         import os as _os
         import sys as _sys
-        from .media import vtdecode
+        from .media import registry
         prefer_hwaccel = _os.environ.get("ISS_FORCE_SW_HEVC", "0") == "0"
-        # Decoder selection:
-        #   AVC path  — requested by ISS_VIDEO_CODEC=avc; always libav AvcDecoder.
-        #   HEVC path — default; on macOS tries native VideoToolbox first (no libav
-        #               RPS layer → VT conceals instead of blocking on missing refs),
-        #               falls back to libav HevcDecoder. ISS_DECODER=libav forces
-        #               the cross-platform path; ISS_FORCE_SW_HEVC=1 forces software.
+        # Decoder selection. On macOS the native VideoToolbox path
+        # (VTDecompressionSession, vtdecode.py) decodes Apple's stream the way
+        # its own viewer does — VideoToolbox manages the DPB and conceals the
+        # odd missing-ref frame instead of BLOCKING, which is what libav's
+        # hwaccel glue does (errno=35 → our drain/drop recovery → cascade
+        # freeze). It's the default on macOS; `ISS_DECODER=libav` forces the
+        # cross-platform libav path, and `ISS_FORCE_SW_HEVC=1` forces libav
+        # software (and therefore libav).
+        _decoder_choice = _os.environ.get("ISS_DECODER", "auto").lower()
+        # Per-codec hardware-accel preference, then registry-driven selection
+        # (media/registry.py owns the capability matrix + override handling).
         if self._video_codec == "avc":
-            self._decoder = AvcDecoder(
-                num_tiles=num_tiles,
-                enable_quality_gate=True,
-                on_frame_published=self._on_frame_published,
-                prefer_hwaccel=prefer_hwaccel,
-            )
+            # AVC path: the host streams H.264 4:2:0. d3d11va's H.264 decoder
+            # corrupts Apple's stream at the frame_num/POC wrap (~34 s in): the
+            # 4 tiles are one interleaved low-delay stream anchored on per-tile
+            # long-term references, and the D3D11 decoder's reference resolution
+            # collapses when poc_lsb wraps (log2_max_poc_lsb=13 → every ~34 s) —
+            # all four tiles start decoding off the same picture, so the canvas
+            # dissolves into four identical bands. Software libav decodes the
+            # identical bitstream correctly indefinitely (verified clean past
+            # the wrap), so force software for AVC on Windows. Override with
+            # ISS_AVC_HWACCEL=1, or ISS_AVC_HW_REANCHOR for HW + periodic IDR.
+            avc_prefer_hwaccel = prefer_hwaccel
+            if self._avc_reanchor_enabled:
+                # Keep hardware decode; avoid the d3d11va POC-wrap bug by
+                # periodically re-anchoring with a fresh IDR (see _maybe_
+                # reanchor, driven from _tx_loop). Lower latency/CPU than the
+                # software fallback at the cost of a keyframe burst every N s.
+                log.info("AVC: hardware decode + automatic IDR re-anchor "
+                         "(every ~%d frames since IDR, d3d11va POC-wrap "
+                         "workaround)", self._AVC_REANCHOR_FRAMES)
+            elif (_sys.platform == "win32"
+                    and _os.environ.get("ISS_AVC_HWACCEL", "0") == "0"):
+                avc_prefer_hwaccel = False
+                log.info("AVC: forcing software decode "
+                         "(d3d11va H.264 POC-wrap corruption workaround)")
+            _pf = avc_prefer_hwaccel
+            _override = registry.normalize_override(_decoder_choice, "avc")
         else:
-            _decoder_choice = _os.environ.get("ISS_DECODER", "auto").lower()
-            _use_vt = (
-                _sys.platform == "darwin"
-                and prefer_hwaccel
-                and _decoder_choice in ("auto", "vt", "videotoolbox")
-                and vtdecode.available()
-            )
-            if _use_vt:
-                try:
-                    self._decoder = vtdecode.VTHevcDecoder(
-                        num_tiles=num_tiles,
-                        enable_quality_gate=True,
-                        on_frame_published=self._on_frame_published,
-                    )
-                    log.info("HEVC decoder: native VideoToolbox (VTDecompressionSession)")
-                except Exception as e:
-                    log.warning("VideoToolbox-native decoder unavailable (%s) — "
-                                "falling back to libav", e)
-                    _use_vt = False
-            if not _use_vt:
-                self._decoder = HevcDecoder(
-                    num_tiles=num_tiles,
-                    enable_quality_gate=True,
-                    on_frame_published=self._on_frame_published,
-                    prefer_hwaccel=prefer_hwaccel,
-                )
+            # HEVC 4:4:4: the registry prefers native VideoToolbox on macOS and
+            # the generic libav d3d11va-RExt / Intel QSV paths on Windows/Linux.
+            # ISS_FORCE_SW_HEVC=1 pins the libav software path.
+            _pf = prefer_hwaccel
+            _override = ("libav-hevc444" if not prefer_hwaccel
+                         else registry.normalize_override(_decoder_choice, "hevc"))
+
+        _spec, self._decoder = registry.build_best(
+            self._video_codec, override=_override, num_tiles=num_tiles,
+            enable_quality_gate=True, on_frame_published=self._on_frame_published,
+            prefer_hwaccel=_pf,
+        )
+        if self._decoder is None:
+            raise RuntimeError(
+                f"no usable decoder for codec {self._video_codec!r} "
+                f"(override={_override!r})")
         if not prefer_hwaccel:
             log.info("ISS_FORCE_SW_HEVC=1: HW decoders disabled")
         self._decoder.set_params(burst.vps, burst.sps, burst.all_pps)

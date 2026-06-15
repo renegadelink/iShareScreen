@@ -128,6 +128,21 @@ def _make_parser() -> argparse.ArgumentParser:
         ),
     )
     g.add_argument(
+        "--decoder", metavar="NAME", default="auto",
+        help=(
+            "video decoder to use. 'auto' (default) picks the best available "
+            "decoder for the negotiated codec; or force one by name — "
+            "vt-hevc444 / libav-hevc444 / qsv-hevc444 / libav-avc420 (legacy "
+            "aliases vt / qsv / libav also accepted). Run --list-decoders to "
+            "see the matrix and which are available on this machine."
+        ),
+    )
+    g.add_argument(
+        "--list-decoders", action="store_true",
+        help=("print the decoder capability matrix (with live availability on "
+              "this machine) and exit"),
+    )
+    g.add_argument(
         "--curtain", action=argparse.BooleanOptionalAction, default=True,
         help=(
             "blank the host's physical screen via a SkyLight virtual "
@@ -386,6 +401,17 @@ def main(argv: Optional[list[str]] = None) -> int:
     # HEVC-only; unset leaves the byte-identical "both" offer (server picks HEVC).
     if args.codec:
         os.environ["ISS_VIDEO_CODEC"] = args.codec
+
+    if args.list_decoders:
+        from .proxy.media import registry
+        print(registry.describe())
+        return 0
+    # `--decoder` feeds the registry override via the env var session.py reads
+    # (keeps the protocol layer free of a CLI dependency).
+    if getattr(args, "decoder", "auto") and args.decoder != "auto":
+        import os as _os
+        _os.environ["ISS_DECODER"] = args.decoder
+
     signal.signal(signal.SIGINT, signal.default_int_handler)
 
     # Surface tracebacks for any thread that crashes — without this,
