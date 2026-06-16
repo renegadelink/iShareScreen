@@ -9,8 +9,8 @@ selector filters to the negotiated codec, sorts hardware-before-software then by
 priority, and returns the first spec whose `available()` probe passes. Two knobs
 sit on top:
 
-  * codec negotiation — `resolve_codec("auto")` offers HEVC when any 4:4:4
-    decoder is available here, else AVC 4:2:0 (`can_decode`).
+  * codec negotiation — `resolve_codec("auto")` offers HEVC when a hardware
+    4:4:4 decoder is available here, else AVC 4:2:0 (`can_decode`).
   * manual override — `ISS_DECODER=<name>` / `--decoder <name>` forces a spec;
     `--list-decoders` prints the live matrix (run it on an Intel box to see
     whether `libav-hevc444` covers 4:4:4 via the generic DXVA-RExt path, making
@@ -99,13 +99,26 @@ def _build_avc(num_tiles, *, enable_quality_gate=True, on_frame_published=None,
 
 
 # ── the registry ─────────────────────────────────────────────────────────
-# Priorities encode the current selection order:
-#   HEVC 4:4:4: VT (macOS, 100) > libav generic (60) > Intel QSV (50).
-#   libav-hevc444 and qsv-hevc444 are mutually exclusive in practice
-#   (`_hevc444_method()` returns exactly one of 'libav'/'qsv'/None), so the
-#   gap just encodes "prefer the generic path when both could apply".
-#   AVC 4:2:0: one adaptive libav decoder (always available; H.264 4:2:0 HW-
-#   decodes on every platform, with an internal SW fallback + AMD workaround).
+# Priority ladder (higher = preferred within a codec):
+#   100  vt-hevc444        vendor-specific HW (macOS)
+#    90  qsv-hevc444       vendor-specific HW (Intel, Windows/Linux) — the ONLY
+#                          working HW path for HEVC 4:4:4 on Windows today.
+#                          d3d11va/d3d12va reject 4:4:4 RExt packets (EPERM on
+#                          avcodec_send_packet) because PyAV's bundled FFmpeg
+#                          (8.1.1) does not contain the HEVC RExt DXVA GUID patch
+#                          (submitted to ffmpeg-devel 2024-11, not yet merged).
+#                          When a future PyAV/FFmpeg release adds those GUIDs,
+#                          libav-hevc444 will start passing its probe on Windows
+#                          and can be promoted — but qsv-hevc444 should remain
+#                          preferred (vendor path, lower latency overhead).
+#    60  libav-hevc444     generic libav HW hwaccel — vaapi/cuda on Linux,
+#                          VideoToolbox hwaccel fallback on macOS. On Windows,
+#                          probe currently fails (see note above); this slot is
+#                          reserved for future d3d11va RExt support.
+#    20  libav-hevc444-sw  SOFTWARE HEVC 4:4:4 — last resort when HEVC is
+#                          explicitly requested. Slow for live 4-tile streams
+#                          but preserves full 4:4:4 chroma fidelity.
+#     1  libav-avc420      H.264 4:2:0 — experimental; absolute last resort.
 _REGISTRY: list[DecoderSpec] = [
     DecoderSpec("vt-hevc444", "hevc", "444", ("darwin",), "hardware", 100,
                 available=lambda: _vt_available(), build=_build_vt,
@@ -207,13 +220,16 @@ def build_best(codec: str, *, override: Optional[str], num_tiles: int, **opts):
 
 def resolve_codec(choice: str) -> str:
     """Resolve a `--codec` value to a concrete 'hevc' / 'avc'. 'auto' offers
-    HEVC when any 4:4:4 decoder is available here, else H.264 4:2:0."""
+    HEVC when any 4:4:4 decoder is available here, else H.264 4:2:0.
+
+    Priority: HW HEVC 4:4:4 > AVC 4:2:0. Software HEVC 4:4:4 remains available
+    when HEVC is requested explicitly, but does not drive auto negotiation."""
     if choice != "auto":
         return choice
-    if can_decode("hevc", "444"):
-        log.info("codec=auto: a HEVC 4:4:4 decoder is available -> hevc")
+    if can_decode("hevc", "444", hardware_only=True):
+        log.info("codec=auto: a HEVC 4:4:4 hardware decoder is available -> hevc")
         return "hevc"
-    log.info("codec=auto: no HEVC 4:4:4 decoder -> avc (H.264 4:2:0)")
+    log.info("codec=auto: no HEVC 4:4:4 hardware decoder -> avc (H.264 4:2:0)")
     return "avc"
 
 
