@@ -42,8 +42,8 @@ from .input import InputController
 from .media.aac_eld import AacEldDecoder, make_aac_eld_decoder
 from .media.hevc import HevcDecoder
 from .media.avc import AvcDecoder
-from .media.nalu import first_donl, reassemble_group
-from .media.avc_nalu import reassemble_h264
+from .media.nalu import first_donl, reassemble_group, reassemble_group_h264, is_avc_config
+from .media.registry import resolve_codec
 from .media.quality_gate import TileVisState
 from .. import __version__ as _iss_version
 from .control import ControlServer
@@ -188,6 +188,13 @@ class SessionConfig:
     hdr: bool = False
     audio: bool = True
 
+    # Video codec to negotiate:
+    #   "auto"  → probe GPU for HEVC 4:4:4 HW support, use "hevc" if available,
+    #             else fall back to "avc" (H.264 4:2:0, HW-decodable everywhere).
+    #   "hevc"  → force Apple HEVC RExt 4:4:4 (best quality; CPU-heavy without HW).
+    #   "avc"   → force H.264 High 4:2:0 (lower quality, but universally HW-decoded).
+    video_codec: str = "auto"
+
     # When auth user differs from the console user, ask the console user
     # to share their existing session (Apple's "Ask to share" choice in
     # the Screen Sharing.app prompt). On accept, the viewer joins the
@@ -262,14 +269,16 @@ class Session:
     def __init__(self, config: SessionConfig) -> None:
         self._config = config
 
+        # Resolve "auto" to a concrete codec now (probes GPU for HEVC 4:4:4 HW
+        # decode; cached). "hevc"/"avc" pass through unchanged.
+        self._video_codec: str = resolve_codec(config.video_codec)
+        # Serializes the decoder start/restart/close lifecycle so concurrent
+        # watchdog restarts (tx-loop and rx-loop can both trigger) don't
+        # double-teardown the codec context.
+        self._lifecycle_lock = threading.RLock()
+
         # Connection state — None when disconnected.
         self._negotiation: Optional[NegotiationResult] = None
-        # Video codec: 'avc' (H.264 4:2:0) when ISS_VIDEO_CODEC=avc is offered,
-        # else 'hevc' (the byte-identical default the server answers with HEVC).
-        self._video_codec = (
-            "avc" if os.environ.get("ISS_VIDEO_CODEC", "").lower() == "avc"
-            else "hevc"
-        )
         self._decoder: Optional[object] = None
         self._aac: Optional[AacEldDecoder] = None
         self._input: Optional[InputController] = None
@@ -874,13 +883,14 @@ class Session:
         # actually works on each platform.
         import os as _os
         prefer_hwaccel = _os.environ.get("ISS_FORCE_SW_HEVC", "0") == "0"
-        _DecoderCls = AvcDecoder if self._video_codec == "avc" else HevcDecoder
-        self._decoder = _DecoderCls(
-            num_tiles=num_tiles,
-            enable_quality_gate=True,
-            on_frame_published=self._on_frame_published,
-            prefer_hwaccel=prefer_hwaccel,
-        )
+        with self._lifecycle_lock:
+            _DecoderCls = AvcDecoder if self._video_codec == "avc" else HevcDecoder
+            self._decoder = _DecoderCls(
+                num_tiles=num_tiles,
+                enable_quality_gate=True,
+                on_frame_published=self._on_frame_published,
+                prefer_hwaccel=prefer_hwaccel,
+            )
         if not prefer_hwaccel:
             log.info("ISS_FORCE_SW_HEVC=1: HW decoders disabled")
         self._decoder.set_params(burst.vps, burst.sps, burst.all_pps)
@@ -1045,6 +1055,9 @@ class Session:
         (without it the encoder-canvas reply degenerates and no burst
         arrives), so we always send a valid audio offer; `cfg.audio=False`
         only skips local decode + playback."""
+        # Advertise only the resolved codec bank (not both) so the host
+        # sends the right stream. ISS_VIDEO_CODEC is what offers.py reads.
+        os.environ["ISS_VIDEO_CODEC"] = self._video_codec
         video_offer, audio_offer = create_offers()
         self._our_video_ssrc = extract_offer_ssrc(video_offer, is_video=True)
         self._our_audio_ssrc = extract_offer_ssrc(audio_offer, is_video=False)
@@ -1786,7 +1799,7 @@ class Session:
         # The access unit's DONL (decoding-order number) — the LTR ring key
         # the LTRP ack must echo. Same for every NALU in the group.
         donl = first_donl(ordered) if self._ltr_enabled else None
-        _reassemble = reassemble_h264 if self._video_codec == "avc" else reassemble_group
+        _reassemble = reassemble_group_h264 if self._video_codec == "avc" else reassemble_group
         au_cb = self._video_au_callback if self._video_codec == "avc" else None
         au_parts: list[bytes] = []
         for nalu in _reassemble(ordered):
