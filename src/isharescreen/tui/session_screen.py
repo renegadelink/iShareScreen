@@ -24,6 +24,8 @@ import subprocess
 import sys
 import time
 
+from collections import deque
+
 # Textual handles text selection natively (App.ALLOW_SELECT), so selecting is
 # just a plain mouse drag — no Shift/Option/Fn modifier (those interfere). Copy
 # the selection with C (action_copy_log_selection → App.copy_to_clipboard).
@@ -52,7 +54,7 @@ def _copy_to_system_clipboard(text: str) -> bool:
     except Exception:
         return False
 from dataclasses import dataclass
-from typing import Any, Optional
+from typing import Any, Deque, Optional, Tuple
 
 from textual.app import ComposeResult
 from textual.binding import Binding
@@ -195,8 +197,25 @@ class RatesPanel(Container):
         self.query_one("#rates-text", Static).update("\n".join(lines))
 
 
+_HISTORY_WINDOW_S: float = 30.0
+
+
+def _stats(window: "Deque[Tuple[float, float]]", now: float) -> Optional[Tuple[float, float, float]]:
+    """Return (min, avg, max) of values in the last 30 s, or None if empty."""
+    vals = [v for t, v in window if now - t <= _HISTORY_WINDOW_S]
+    if not vals:
+        return None
+    return min(vals), sum(vals) / len(vals), max(vals)
+
+
 class HealthPanel(Container):
     """UDP queue depth, drops, cursor age, last-publish age."""
+
+    def __init__(self, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        # Rolling 30-second history: (monotonic_time, value)
+        self._lat_hist: Deque[Tuple[float, float]] = deque()
+        self._dq_hist: Deque[Tuple[float, float]] = deque()
 
     def compose(self) -> ComposeResult:
         yield Label("[b]Health[/]")
@@ -209,7 +228,10 @@ class HealthPanel(Container):
         last_publish_age_s: float,
         loss_total: int,
         loss_unmapped: int,
+        decode_latency_ms: Optional[float] = None,
+        decode_queue: Optional[dict] = None,
     ) -> None:
+        now = time.monotonic()
         v = udp_q.get("video", {}); c = udp_q.get("ctrl", {})
         v_drop = v.get("drop", 0); c_drop = c.get("drop", 0)
         cur_age = cursor.get("age_ms", -1)
@@ -218,12 +240,53 @@ class HealthPanel(Container):
         )
         drop_style = "red" if (v_drop + c_drop) > 0 else "green"
         loss_style = "red" if loss_total > 0 else "green"
+
+        # ── dec pipe latency ────────────────────────────────────────
+        if decode_latency_ms is not None and decode_latency_ms > 0:
+            self._lat_hist.append((now, decode_latency_ms))
+        # prune old samples
+        while self._lat_hist and now - self._lat_hist[0][0] > _HISTORY_WINDOW_S:
+            self._lat_hist.popleft()
+        lat_stats = _stats(self._lat_hist, now)
+        if decode_latency_ms is not None and decode_latency_ms > 0:
+            lat_style = "yellow" if decode_latency_ms > 30 else "green"
+            cur_str = f"[{lat_style}]{decode_latency_ms:.1f}[/] ms"
+            if lat_stats:
+                lo, avg, hi = lat_stats
+                cur_str += f"  [dim]↓{lo:.1f} ⌀{avg:.1f} ↑{hi:.1f}[/]"
+            lat_str = cur_str
+        else:
+            lat_str = "[dim]—[/]"
+
+        # ── dec queue depth ─────────────────────────────────────────
+        if decode_queue is not None:
+            dq_depth = decode_queue.get("depth", 0)
+            dq_cap = decode_queue.get("cap", 512)
+            dq_drop = decode_queue.get("drop", 0)
+            self._dq_hist.append((now, float(dq_depth)))
+            while self._dq_hist and now - self._dq_hist[0][0] > _HISTORY_WINDOW_S:
+                self._dq_hist.popleft()
+            pct = dq_depth / dq_cap if dq_cap > 0 else 0
+            filled = round(pct * 10)
+            bar = "█" * filled + "░" * (10 - filled)
+            bar_style = "red" if pct > 0.5 else ("yellow" if pct > 0.1 else "green")
+            drop_str = f"  drop [red]{dq_drop}[/]" if dq_drop > 0 else ""
+            dq_str = f"[{bar_style}]{bar}[/] {dq_depth}/{dq_cap}{drop_str}"
+            dq_stats = _stats(self._dq_hist, now)
+            if dq_stats:
+                lo, avg, hi = dq_stats
+                dq_str += f"  [dim]↓{int(lo)} ⌀{avg:.1f} ↑{int(hi)}[/]"
+        else:
+            dq_str = "[dim]—[/]"
+
         lines = [
             f"udp_q     video [b]{v.get('depth', 0):>4}/{v.get('cap', 0)}[/]  ctrl [b]{c.get('depth', 0):>4}/{c.get('cap', 0)}[/]",
             f"drops     video [{drop_style}]{v_drop}[/]  ctrl [{drop_style}]{c_drop}[/]",
             f"loss      total [{loss_style}]{loss_total}[/]  unmapped [{loss_style}]{loss_unmapped}[/]",
             f"cursor    [b]{cur_age_s}[/] ago  (count {cursor.get('count', 0)})",
             f"publish   {last_publish_age_s:.1f}s ago",
+            f"dec pipe  {lat_str}",
+            f"dec q     {dq_str}",
         ]
         self.query_one("#health-text", Static).update("\n".join(lines))
 
@@ -431,6 +494,8 @@ class SessionScreen(Screen):
             float(data.get("last_publish_age_s", -1)),
             int(data.get("loss_total", 0)),
             int(data.get("loss_unmapped", 0)),
+            decode_latency_ms=data.get("decode_latency_ms"),
+            decode_queue=data.get("decode_q"),
         )
 
     def apply_event(self, kind: str, fields: dict[str, Any]) -> None:

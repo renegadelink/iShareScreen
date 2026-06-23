@@ -246,11 +246,14 @@ class HevcDecoder:
         # When True (during feed_burst), feed_nalu runs decode synchronously
         # on the calling thread instead of queueing.
         self._sync_decode_mode = False
+        self._queue_full_drops: int = 0
 
         # PTS bookkeeping. Only the active decoder thread (sync mode = main
         # caller; async mode = worker) reads/writes these.
         self._next_pts = 0
         self._pts_to_tile: dict[int, int] = {}
+        self._pts_submit_t: dict[int, float] = {}
+        self._decode_latency_ms: float = 0.0
         self._eagain_streak = 0
         # Session-wide IDR seen since last decoder reset. Cross-tile DPB
         # references mean every tile's frames become visually meaningful
@@ -475,7 +478,7 @@ class HevcDecoder:
             # Queue overflow — drop. DIAGNOSTIC: a dropped slice that a
             # later P-frame references (Apple uses refs ≤8 back) is a
             # silent wedge trigger, so count + surface it.
-            self._queue_full_drops = getattr(self, "_queue_full_drops", 0) + 1
+            self._queue_full_drops += 1
             n = self._queue_full_drops
             if n in (1, 10, 100, 1000) or n % 1000 == 0:
                 log.warning("decoder queue FULL — dropped slice for tile %d "
@@ -551,6 +554,23 @@ class HevcDecoder:
     def hw_accel(self) -> Optional[str]:
         """The active HW accelerator name, or None on software."""
         return self._hw_name
+
+    @property
+    def decode_latency_ms(self) -> float:
+        return self._decode_latency_ms
+
+    @property
+    def decode_queue_depth(self) -> int:
+        q = self._queue
+        return q.qsize() if q is not None else 0
+
+    @property
+    def decode_queue_cap(self) -> int:
+        return _QUEUE_MAX
+
+    @property
+    def decode_queue_drops(self) -> int:
+        return self._queue_full_drops
 
     @property
     def good_counts(self) -> list[int]:
@@ -678,10 +698,13 @@ class HevcDecoder:
         pkt.pts = pts
         pkt.dts = pts
         self._pts_to_tile[pts] = tile_idx
+        import time as _time
+        self._pts_submit_t[pts] = _time.monotonic()
         self._next_pts += 1
         if len(self._pts_to_tile) > _PTS_MAP_SOFT_MAX:
             cutoff = pts - _PTS_MAP_PRUNE_KEEP
             self._pts_to_tile = {k: v for k, v in self._pts_to_tile.items() if k > cutoff}
+            self._pts_submit_t = {k: v for k, v in self._pts_submit_t.items() if k > cutoff}
 
         try:
             with self._codec_lock:
@@ -734,11 +757,16 @@ class HevcDecoder:
                 self._hw_name = None
 
         ti = self._pts_to_tile.pop(frame.pts, None)
+        submit_t = self._pts_submit_t.pop(frame.pts, None)
         if ti is None:
             # PTS aged out of the map (rare on healthy streams; can happen
             # if libavcodec reordered output and our prune fired between).
             log.debug("frame pts=%d not in map", frame.pts)
             return
+        if submit_t is not None:
+            import time as _time
+            latency_ms = (_time.monotonic() - submit_t) * 1000
+            self._decode_latency_ms = 0.1 * latency_ms + 0.9 * self._decode_latency_ms
 
         # Concealed (gray) frames carry libav's decode-error flag; count
         # them in good_count (throughput) but NOT clean_count (real video),
@@ -1058,6 +1086,8 @@ class HevcDecoder:
         self._seen_fmts.clear()
         self._next_pts = 0
         self._pts_to_tile = {}
+        self._pts_submit_t = {}
+        self._decode_latency_ms = 0.0
         log.info("HEVC decoder: shared context (%s)", hw_name or "software")
         # NALU dump diagnostic: prepend VPS+SPS+all-PPSes (Annex-B) so a
         # stock player can decode the dump without external param sets.
@@ -1126,6 +1156,8 @@ class HevcDecoder:
         self._reformatter[0] = None
         self._next_pts = 0
         self._pts_to_tile = {}
+        self._pts_submit_t = {}
+        self._decode_latency_ms = 0.0
         self._dpb_has_idr = False
         self._tiles_await_idr.clear()
         self._pre_idr_drops = 0

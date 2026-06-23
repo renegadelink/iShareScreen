@@ -3168,6 +3168,14 @@ class Session:
                     {str(t): n for t, n in d.items()}
                     for d in nalu_delta
                 ],
+                "decode_latency_ms": round(
+                    getattr(self._decoder, "decode_latency_ms", 0.0), 1
+                ) if self._decoder is not None else None,
+                "decode_q": {
+                    "depth": getattr(self._decoder, "decode_queue_depth", 0),
+                    "cap": getattr(self._decoder, "decode_queue_cap", 512),
+                    "drop": getattr(self._decoder, "decode_queue_drops", 0),
+                } if self._decoder is not None else None,
             })
 
     def _send_heartbeat(self) -> None:

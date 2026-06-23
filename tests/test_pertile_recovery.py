@@ -75,6 +75,8 @@ def _make_decoder(num_tiles: int = 4, *, with_codec: bool = False) -> HevcDecode
     d._codec_lock = threading.Lock()
     d._next_pts = 0
     d._pts_to_tile = {}
+    d._pts_submit_t = {}
+    d._decode_latency_ms = 0.0
     d._pre_idr_drops = 0
     d._recent_idr_sizes = []
     d._IDR_HISTORY_LEN = 10

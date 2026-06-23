@@ -104,6 +104,9 @@ class AvcDecoder:
         # LTRP is HEVC-only; keep the attribute so the session's LTR-ack path
         # is a no-op instead of crashing.
         self.last_clean_donl: list[Optional[int]] = [None] * num_tiles
+        # Decode latency monitoring: EMA of submit→frame round-trip (ms).
+        self._decode_latency_ms: float = 0.0
+        self._queue_full_drops: int = 0
 
     # -- setup ---------------------------------------------------------
 
@@ -192,6 +195,8 @@ class AvcDecoder:
         # frame back to the tile that fed it via the FIFO (no B-frame reorder).
         # The whole parse+decode runs under _codec_lock so a concurrent
         # restart()/close() can't free the context mid-decode.
+        import time as _time
+        _t0 = _time.monotonic()
         published: list[int] = []
         with self._codec_lock:
             ctx = self._ensure_codec_locked()
@@ -220,6 +225,9 @@ class AvcDecoder:
                         slot.raw_frame = frame
                         slot.good_count += 1
                     published.append(ti)
+        if published:
+            latency_ms = (_time.monotonic() - _t0) * 1000
+            self._decode_latency_ms = 0.1 * latency_ms + 0.9 * self._decode_latency_ms
         # Notify outside the codec lock to avoid holding it across the callback.
         if self._on_frame_published is not None:
             for ti in published:
@@ -269,6 +277,22 @@ class AvcDecoder:
         return self._gate.bad_tiles
 
     @property
+    def decode_latency_ms(self) -> float:
+        return self._decode_latency_ms
+
+    @property
+    def decode_queue_depth(self) -> int:
+        return len(self._fed_tiles)
+
+    @property
+    def decode_queue_cap(self) -> int:
+        return 512
+
+    @property
+    def decode_queue_drops(self) -> int:
+        return self._queue_full_drops
+
+    @property
     def good_counts(self) -> list:
         return [t.good_count for t in self._tiles]
 
@@ -290,6 +314,7 @@ class AvcDecoder:
                 self._codec = None
             self._fed_tiles.clear()
             self._dpb_ready = False
+            self._decode_latency_ms = 0.0
             self._gate.reset()
             if self._sps and self._pps:
                 self._ensure_codec_locked()
