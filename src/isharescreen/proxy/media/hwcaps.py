@@ -40,9 +40,6 @@ _PROBE_HWACCELS: dict[str, tuple[str, ...]] = {
     "*": ("vaapi", "cuda"),
 }
 
-_cache: dict[str, bool] = {}
-
-
 def _probe_one(hwaccel_type: str) -> bool:
     """True iff `hwaccel_type` hardware-decodes the embedded HEVC 4:4:4 sample.
 

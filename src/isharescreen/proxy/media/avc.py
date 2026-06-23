@@ -34,7 +34,7 @@ from .tiles import TileFrame
 from .nalu import H264_NAL_IDR
 from .quality_gate import FrameQualityGate, TileVisState
 from .hevc import (
-    _av_frame_to_tile, _TileSlot, _platform_hwaccels,
+    _av_frame_to_tile, _TileSlot,
     _NAL_START_CODE, _CODEC_FLAG_LOW_DELAY, _CODEC_FLAG2_FAST,
     _QUEUE_MAX, _WORKER_DEQUEUE_TIMEOUT_S, _WORKER_JOIN_TIMEOUT_S,
     _HWACCEL_SILENT_NALU_LIMIT, _HWACCEL_BURST_ERROR_THRESHOLD,
@@ -49,6 +49,22 @@ log = logging.getLogger(__name__)
 # inspection with a stock H.264 player.
 _NALU_DUMP_PATH = os.environ.get("ISS_NALU_DUMP")
 _nalu_dump_f = open(_NALU_DUMP_PATH, "wb") if _NALU_DUMP_PATH else None
+
+# H.264 4:2:0 is hardware-decodable on essentially every GPU, so we use a
+# broader hwaccel list than HEVC: macOS VideoToolbox works for H.264 (it was
+# only disabled for HEVC because Apple's HEVC 4:4:4 has DPB stalls with the
+# libav VT-hwaccel glue layer, not because VT can't decode H.264).
+import sys as _sys
+_H264_HWACCELS: dict[str, tuple[str, ...]] = {
+    "darwin": ("videotoolbox",),
+    "win32":  ("d3d11va", "dxva2"),
+    "linux":  ("vaapi",),
+    "*":      (),
+}
+
+def _h264_platform_hwaccels() -> tuple[str, ...]:
+    return _H264_HWACCELS.get(_sys.platform, _H264_HWACCELS["*"])
+
 
 def _h264_type(b: int) -> int:
     return b & 0x1F
@@ -448,7 +464,7 @@ class AvcDecoder:
     def _create_codec(self, *, force_software: bool) -> None:
         extradata = self._build_extradata()
         if not force_software and self._prefer_hwaccel and not self._hw_failed:
-            for hw_type in _platform_hwaccels():
+            for hw_type in _h264_platform_hwaccels():
                 ctx = self._try_hwaccel(hw_type, extradata)
                 if ctx is not None:
                     self._install_codec(ctx, hw_name=hw_type)

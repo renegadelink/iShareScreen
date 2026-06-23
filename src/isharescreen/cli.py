@@ -335,7 +335,7 @@ def _run_frontend(config: SessionConfig, args: argparse.Namespace) -> int:
     # browser (default): H.264 pass-through needs the AVC codec path. The
     # Session reads ISS_VIDEO_CODEC at construction, so force it unless the
     # user explicitly chose a codec.
-    if args.codec is None:
+    if args.codec == "auto":
         os.environ["ISS_VIDEO_CODEC"] = "avc"
     # Use the cursor pseudo-encoding (RFB enc 1104), same as the wgpu viewer:
     # the daemon does NOT bake the cursor into the framebuffer, it sends cursor

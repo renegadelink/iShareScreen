@@ -42,8 +42,8 @@ from .input import InputController
 from .media.aac_eld import AacEldDecoder, make_aac_eld_decoder
 from .media.hevc import HevcDecoder
 from .media.avc import AvcDecoder
-from .media.nalu import first_donl, reassemble_group, reassemble_group_h264, is_avc_config
-from .media.registry import resolve_codec
+from .media.nalu import first_donl, reassemble_group, reassemble_group_h264
+from .media.registry import resolve_codec, build_best as _registry_build_best
 from .media.quality_gate import TileVisState
 from .. import __version__ as _iss_version
 from .control import ControlServer
@@ -883,16 +883,21 @@ class Session:
         # actually works on each platform.
         import os as _os
         prefer_hwaccel = _os.environ.get("ISS_FORCE_SW_HEVC", "0") == "0"
+        if not prefer_hwaccel:
+            log.info("ISS_FORCE_SW_HEVC=1: HW decoders disabled")
         with self._lifecycle_lock:
-            _DecoderCls = AvcDecoder if self._video_codec == "avc" else HevcDecoder
-            self._decoder = _DecoderCls(
+            # registry.build_best honours ISS_DECODER override and selects the
+            # best available decoder spec for the resolved codec (vt-hevc444 on
+            # macOS, qsv-hevc444 on Intel, generic libav, or avc). Falls back
+            # to HevcDecoder/AvcDecoder directly if the registry has no match.
+            self._decoder = _registry_build_best(
+                self._video_codec,
+                override=_os.environ.get("ISS_DECODER"),
                 num_tiles=num_tiles,
                 enable_quality_gate=True,
                 on_frame_published=self._on_frame_published,
                 prefer_hwaccel=prefer_hwaccel,
             )
-        if not prefer_hwaccel:
-            log.info("ISS_FORCE_SW_HEVC=1: HW decoders disabled")
         self._decoder.set_params(burst.vps, burst.sps, burst.all_pps)
         self._decoder.start()
         # Mark the start of the burst-feed window so the DPB-break
@@ -1260,8 +1265,9 @@ class Session:
             self._input.close()
             self._input = None
         if self._decoder is not None:
-            self._decoder.close()
-            self._decoder = None
+            with self._lifecycle_lock:
+                self._decoder.close()
+                self._decoder = None
         if self._aac is not None:
             self._aac.close()
             self._aac = None
@@ -1957,7 +1963,8 @@ class Session:
             # IDR shows up (often never).
             self._last_decoder_restart_t = now
             self._dpb_error_window.clear()
-            self._decoder.restart()
+            with self._lifecycle_lock:
+                self._decoder.restart()
             self.request_fir()
 
     # ── RTCP RX loop (server SR for jitter / dlsr) ──────────────────
@@ -2803,7 +2810,8 @@ class Session:
                     gap,
                 )
                 try:
-                    self._decoder.restart()
+                    with self._lifecycle_lock:
+                        self._decoder.restart()
                 except Exception as e:
                     log.debug("decoder.restart() failed: %s", e)
                 self.request_fir()
@@ -2864,7 +2872,8 @@ class Session:
                     worst,
                 )
                 try:
-                    self._decoder.restart()
+                    with self._lifecycle_lock:
+                        self._decoder.restart()
                 except Exception as e:
                     log.debug("per-tile-stall restart failed: %s", e)
                 self.request_fir()
