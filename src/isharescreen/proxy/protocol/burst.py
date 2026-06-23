@@ -210,7 +210,7 @@ def gather_initial_burst(
     # the raw header). HEVC: type=(b>>1)&0x3f in {VPS32,SPS33,PPS34,AP48,FU49}.
     # H.264: forbidden bit clear and type=b&0x1f in {1,5,7,8,24,28,29}. Logged
     # once per session so a starved HEVC harvest on an H.264 stream is legible.
-    _raw = nonlocal_state.get("raw_hdr", set())
+    _raw = nonlocal_state.get("hdr_bytes", set())
     _is_hevc = any(((b >> 1) & 0x3F) in (NAL_VPS, NAL_SPS, NAL_PPS, 48, 49) for b in _raw)
     _is_h264 = any((b & 0x80) == 0 and (b & 0x1F) in (1, 5, 7, 8, 24, 28, 29) for b in _raw) and not _is_hevc
     log.info(

@@ -221,9 +221,9 @@ def _build_mediablob(mode: int, session_id: int, timestamp: int) -> bytes:
         # field1=100 (`avc_bank`) makes it send HEVC 4:4:4. Select by the TRUE
         # codec; "both" keeps Apple's byte-identical order (123 then 100).
         if _codec == "avc":
-            _codec_banks = _field_bytes(3, hevc_bank)   # field1=123 -> H.264
+            _codec_banks = _field_bytes(3, avc_bank)    # AVC bank, PT 123
         elif _codec == "hevc":
-            _codec_banks = _field_bytes(3, avc_bank)     # field1=100 -> HEVC
+            _codec_banks = _field_bytes(3, hevc_bank)   # HEVC bank, PT 100
         else:
             _codec_banks = _field_bytes(3, hevc_bank) + _field_bytes(3, avc_bank)
         desc = (
