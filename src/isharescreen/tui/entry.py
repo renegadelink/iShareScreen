@@ -80,6 +80,8 @@ def _build_cli_overrides(argv: list[str]) -> Optional[dict[str, Any]]:
         overrides["share_console"] = args.share_console
     if "--alt-session" in typed:
         overrides["alt_session"] = args.alt_session
+    if "--codec" in typed:
+        overrides["video_codec"] = args.codec
     # --verbose / --log-file are not connect-form fields; they live on
     # ViewerArgs so the supervisor can forward them to the worker.
     if args.verbose:

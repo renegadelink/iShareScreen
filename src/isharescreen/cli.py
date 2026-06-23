@@ -73,10 +73,32 @@ def _make_parser() -> argparse.ArgumentParser:
     )
     g.add_argument("--port", type=int, default=5900, help="TCP port (default 5900)")
     g.add_argument(
-        "--codec", choices=["hevc", "avc"], default=None,
-        help="Video codec: hevc = Apple's HEVC 4:4:4 (default; best quality, "
-        "needs 4:4:4 HW or fast CPU); avc = H.264 4:2:0 (hardware-decodable on "
-        "Windows/Linux where 4:4:4 isn't, ~5x bitrate of HEVC)")
+        "--codec", choices=("auto", "hevc", "avc"), default="auto",
+        help=(
+            "video codec to negotiate with the host. 'auto' (default) probes "
+            "whether this GPU can hardware-decode HEVC 4:4:4 and uses it if so, "
+            "otherwise falls back to H.264 4:2:0. 'hevc' = force Apple HEVC RExt "
+            "4:4:4 (best quality; slow CPU fallback on GPUs without 4:4:4 HW "
+            "decode). 'avc' = force H.264 High 4:2:0 (lower quality, but "
+            "hardware-decodes on virtually any GPU: D3D11VA / VAAPI / "
+            "VideoToolbox)."
+        ),
+    )
+    g.add_argument(
+        "--decoder", metavar="NAME", default="auto",
+        help=(
+            "video decoder to use. 'auto' (default) picks the best available "
+            "decoder for the negotiated codec; or force one by name — "
+            "vt-hevc444 / libav-hevc444 / qsv-hevc444 / libav-avc420 (legacy "
+            "aliases vt / qsv / libav also accepted). Run --list-decoders to "
+            "see the matrix and which are available on this machine."
+        ),
+    )
+    g.add_argument(
+        "--list-decoders", action="store_true",
+        help=("print the decoder capability matrix (with live availability on "
+              "this machine) and exit"),
+    )
     g.add_argument(
         "--auth", choices=("srp", "nonsrp"), default="srp",
         help="authentication mode (default srp; falls back to nonsrp on rejection)",
@@ -256,6 +278,7 @@ def _build_session_config(args: argparse.Namespace) -> SessionConfig:
         auth_mode=args.auth,
         advertise=cli_advertise,
         hdr=args.hdr,
+        video_codec=args.codec,
         curtain=args.curtain,
         audio=args.audio,
         share_console=args.share_console, alt_session=args.alt_session,
@@ -333,11 +356,13 @@ def _run_frontend(config: SessionConfig, args: argparse.Namespace) -> int:
 def main(argv: Optional[list[str]] = None) -> int:
     args = _make_parser().parse_args(argv)
     _setup_logging(args)
-    # --codec drives the offer (offers.py) + decoder (session.py), both of which
-    # read ISS_VIDEO_CODEC. avc advertises only the H.264 bank; hevc forces
-    # HEVC-only; unset leaves the byte-identical "both" offer (server picks HEVC).
-    if args.codec:
-        os.environ["ISS_VIDEO_CODEC"] = args.codec
+    if args.list_decoders:
+        from .proxy.media import registry
+        print(registry.describe())
+        return 0
+    # `--decoder` feeds the registry override via the env var session.py reads.
+    if getattr(args, "decoder", "auto") and args.decoder != "auto":
+        os.environ["ISS_DECODER"] = args.decoder
     signal.signal(signal.SIGINT, signal.default_int_handler)
 
     # Surface tracebacks for any thread that crashes — without this,
