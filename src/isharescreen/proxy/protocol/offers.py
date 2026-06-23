@@ -109,14 +109,33 @@ _APPLE_AUDIO_F9 = b"".join(_build_audio_f9_entry(*t) for t in _AUDIO_F9_TIERS)
 # real encoder tokens (see session._send_ltr_ack). `LTR;` here + the
 # structured ltrpEnabled field7 + allowRTCPFB together enable it.
 import os as _os
-_HEVC_PARAMS = (
+# ── HEVC + AVC feature-list strings ───────────────────────────────────
+#
+# Each video codec bank carries a semicolon-delimited feature-list string
+# (FLS, field 3). The codec a bank represents is keyed off its RTP payload
+# *number* (field 1) by the host: PT 123 → H.264/AVC, PT 100 → HEVC RExt
+# 4:4:4 (confirmed live 2026-06 against a real host — offering PT 123 alone
+# makes screensharingd stream H.264, PT 100 alone streams HEVC; matches the
+# wire PT 100=HEVC seen in captures). The two FLS strings below are Apple's
+# verbatim per-codec values. (An earlier revision had these two names
+# swapped; it never mattered because both banks were always offered.)
+#
+# VideoRuleCollection field map CONFIRMED against AVConference.arm64e
+# (15.7.5/24G624): the readFrom: parser's IVAR-offset table maps each wire
+# field to an IVAR, and the accessors pin the names:
+#   f1 = transport       enum (1=wifi, 2=cellular)
+#   f2 = operation       enum (1=encode, 2=decode)
+#   f3 = formats         the (width,fps) bitmap 0xC3C3; NOT range-checked
+#   f4 = preferredFormat varint
+# 0xC3C3 belongs in f3 — do NOT move it to f1 (transport enum).
+_AVC_PARAMS = (
     (b"FLS;MS:-1;LF:-1;LTR;CABAC;POS:0;EOD:1;HTS:2;RR:3;"
      b"AR:16/9,5/8;XR:16/9,5/8;")
     if _os.environ.get("ISS_LTRP", "1") != "0" else
     (b"FLS;MS:-1;LF:-1;CABAC;POS:0;EOD:1;HTS:2;RR:3;"
      b"AR:16/9,5/8;XR:16/9,5/8;")
 )
-_AVC_PARAMS = (
+_HEVC_PARAMS = (
     b"FLS;LF:-1;POS:5;EOD:1;HTS:2;RR:3;POSE:4;"
     b"AR:16/9,5/8;XR:16/9,5/8;"
 )
@@ -171,17 +190,21 @@ def _build_mediablob(mode: int, session_id: int, timestamp: int) -> bytes:
     if mode == 7:
         res_entry = _field_varint(1, 1) + _field_varint(2, 1) + _field_varint(3, 50115) + _field_varint(4, 0)
         res_entry_alt = _field_varint(1, 1) + _field_varint(2, 2) + _field_varint(3, 50115) + _field_varint(4, 0)
-        hevc_bank = (
+        # AVC/H.264 bank — RTP PT 123. (4 res entries + field4=1, verbatim
+        # from Apple's createOffer.) Host has only H.264 Main/ConstrainedBaseline
+        # → always 4:2:0.
+        avc_bank = (
             _field_varint(1, 123)
             + _field_bytes(2, res_entry) + _field_bytes(2, res_entry_alt)
             + _field_bytes(2, res_entry) + _field_bytes(2, res_entry_alt)
-            + _field_bytes(3, _HEVC_PARAMS)
+            + _field_bytes(3, _AVC_PARAMS)
             + _field_varint(4, 1)
         )
-        avc_bank = (
+        # HEVC RExt 4:4:4 bank — RTP PT 100. (2 res entries + field4=14.)
+        hevc_bank = (
             _field_varint(1, 100)
             + _field_bytes(2, res_entry) + _field_bytes(2, res_entry_alt)
-            + _field_bytes(3, _AVC_PARAMS)
+            + _field_bytes(3, _HEVC_PARAMS)
             + _field_varint(4, 14)
         )
         # VideoSettings fields (per CoreDevice media-stream-offer RE):
@@ -193,25 +216,19 @@ def _build_mediablob(mode: int, session_id: int, timestamp: int) -> bytes:
         # — decodable by any standard decoder. (iOS CoreDevice defaults to 1.)
         ltrp_on = _os.environ.get("ISS_LTRP", "1") != "0"
         _tiles_per_frame = tiles_per_frame()
-        # Codec selection. Default "both" is byte-identical to Apple's native
-        # offer (HEVC 4:4:4 + the H.264 4:2:0 fallback bank). ISS_VIDEO_CODEC=avc
-        # advertises ONLY the H.264 bank (codec const 100 = H.264 per the GFT
-        # plist) so the server sends H.264 4:2:0 — which hardware-decodes on the
-        # GPUs that can't HW-decode HEVC 4:4:4. This is a TEST gate: confirm the
-        # server actually switches codecs (NAL types in the profile snapshot)
-        # before wiring a real H.264 decode path. ISS_VIDEO_CODEC=hevc forces
-        # HEVC-only.
+        # ISS_VIDEO_CODEC selects which codec bank(s) to advertise. The host
+        # maps the bank's RTP payload number to a codec and, when both are
+        # offered, prefers HEVC — so to force H.264 4:2:0 (e.g. for a client
+        # whose GPU can't HW-decode HEVC RExt 4:4:4) we must advertise the AVC
+        # bank *only*. Default "both" reproduces Apple's native offer
+        # byte-for-byte (AVC bank first, then HEVC) and yields HEVC 4:4:4.
         _codec = _os.environ.get("ISS_VIDEO_CODEC", "both").lower()
-        # NOTE: the bank variables are named backwards. Live testing
-        # PROVED field1=123 (`hevc_bank`) makes the server send H.264 4:2:0 and
-        # field1=100 (`avc_bank`) makes it send HEVC 4:4:4. Select by the TRUE
-        # codec; "both" keeps Apple's byte-identical order (123 then 100).
         if _codec == "avc":
-            _codec_banks = _field_bytes(3, hevc_bank)   # field1=123 -> H.264
+            _codec_banks = _field_bytes(3, avc_bank)
         elif _codec == "hevc":
-            _codec_banks = _field_bytes(3, avc_bank)     # field1=100 -> HEVC
+            _codec_banks = _field_bytes(3, hevc_bank)
         else:
-            _codec_banks = _field_bytes(3, hevc_bank) + _field_bytes(3, avc_bank)
+            _codec_banks = _field_bytes(3, avc_bank) + _field_bytes(3, hevc_bank)
         desc = (
             _field_varint(1, session_id) + _field_varint(2, 1 if ltrp_on else 0)
             + _codec_banks
