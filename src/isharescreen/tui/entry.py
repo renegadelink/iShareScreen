@@ -80,6 +80,8 @@ def _build_cli_overrides(argv: list[str]) -> Optional[dict[str, Any]]:
         overrides["verbose"] = args.verbose
     if args.log_file:
         overrides["log_file"] = args.log_file
+    if "--codec" in typed:
+        overrides["codec"] = args.codec
     return overrides or None
 
 
