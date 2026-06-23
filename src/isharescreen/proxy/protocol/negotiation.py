@@ -76,8 +76,10 @@ class AdvertiseDims:
     protocol layer has no glfw / display-server dependency.
     """
     width: int = 1920
-    height: int = 1200
+    height: int = 1080
     hidpi_scale: int = 2   # 2 = Retina (backing 2× points); 1 = flat (backing == points)
+    width_mm: float = 300.0
+    height_mm: float = 168.75  # proportional to 1920×1080
 
 
 @dataclass(slots=True)

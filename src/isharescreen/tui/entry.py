@@ -14,7 +14,7 @@ from typing import Any, Optional
 
 # Flags that route to `cli.py` instead of the TUI. Anything else goes
 # to the TUI (with the typed values pre-filled into the connect form).
-_CLI_ROUTING_FLAGS = {"--headless", "--help", "-h", "--version"}
+_CLI_ROUTING_FLAGS = {"--headless", "--help", "-h", "--version", "--list-decoders"}
 
 
 def main() -> int:

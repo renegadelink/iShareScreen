@@ -55,7 +55,7 @@ class IssTuiApp(App):
         # but should pass through to the worker subprocess.
         raw = dict(cli_overrides or {})
         self._cli_viewer_flags: dict[str, Any] = {}
-        for k in ("verbose", "log_file"):
+        for k in ("verbose", "log_file", "codec"):
             if k in raw:
                 self._cli_viewer_flags[k] = raw.pop(k)
         self._cli_overrides = raw
@@ -72,8 +72,8 @@ class IssTuiApp(App):
         else:
             base = last or ConnectFormValues(
                 host="", user="", password="",
-                advertise="1920x1080",
-                audio=True, curtain=True, hdr=False,
+                advertise="auto",
+                audio=True, curtain=True, hdr=False, hidpi="auto",
                 share_console=False, alt_session=False,
             )
             prefill = dataclasses.replace(base, **self._cli_overrides)
