@@ -18,9 +18,11 @@ from dataclasses import dataclass
 from typing import Optional
 
 from ..media.bitstream import BitReader, remove_emulation_prevention
-from ..media.nalu import IDR_RANGE, NAL_PPS, NAL_SPS, NAL_VPS, reassemble_group
-from ..media.avc_nalu import (
-    APPLE_CONFIG_MARKER, NAL_SLICE_IDR, parse_avc_config, reassemble_h264)
+from ..media.nalu import (
+    IDR_RANGE, NAL_PPS, NAL_SPS, NAL_VPS, reassemble_group,
+    H264_NAL_IDR, H264_NAL_SPS, H264_NAL_PPS,
+    is_avc_config, parse_avc_config, reassemble_group_h264,
+)
 from .srtp import SRTPDecryptor
 
 
@@ -60,7 +62,6 @@ class InitialBurst:
     last_idr: dict[int, bytes]
     tile_nalus: dict[int, list[bytes]]
     burst_pending: dict[tuple[int, int], list[tuple[int, bool, bytes]]]
-    codec: str = "hevc"
 
 
 def gather_initial_burst(
@@ -74,7 +75,12 @@ def gather_initial_burst(
     codec: str = "hevc",
 ) -> InitialBurst:
     """Drain `udp_video_buf` into NAL units. Returns parameter sets, the per-
-    tile NAL cache, and any incomplete groups for the streaming loop."""
+    tile NAL cache, and any incomplete groups for the streaming loop.
+
+    `codec` selects the RTP depay + parameter-set harvest: `"hevc"` (Apple
+    RFC-7798 + DONL, VPS/SPS/PPS) or `"avc"`/`"h264"` (RFC-6184 + DON, with
+    SPS/PPS delivered up front in an Apple `avc1`/`avcC` config wrapper)."""
+    is_h264 = codec in ("avc", "h264")
     deadline = time.time() + deadline_seconds
     while len(udp_video_buf) < min_packets and time.time() < deadline:
         time.sleep(0.05)
@@ -115,6 +121,18 @@ def gather_initial_burst(
             if not pair:
                 continue
             hdr, payload = pair
+            if is_h264 and is_avc_config(payload):
+                # Apple delivers H.264 SPS/PPS up front in an avc1/avcC config
+                # wrapper, not as Annex-B NALs in a timestamp group. Harvest it
+                # here, independent of group/marker completion.
+                sps_c, pps_list = parse_avc_config(payload)
+                log.info("AVC config packet: %dB -> SPS=%s PPS=%d",
+                         len(payload), "yes" if sps_c else "no", len(pps_list))
+                if sps_c:
+                    nonlocal_state["sps"] = sps_c
+                for _j, _pps in enumerate(pps_list):
+                    all_pps[_j] = _pps
+                continue
             ssrc = struct.unpack(">I", hdr[8:12])[0]
             seq = struct.unpack(">H", hdr[2:4])[0]
             ts = struct.unpack(">I", hdr[4:8])[0]
@@ -146,36 +164,28 @@ def gather_initial_burst(
             else:
                 packets = sorted(grp, key=lambda x: x[0])
 
-            for _s, _t, _p in packets:
-                if _p:
-                    nonlocal_state.setdefault("raw_hdr", set()).add(_p[0])
-            if codec == "avc":
-                payloads = [p for _, _, p in packets]
-                # SPS/PPS arrive in Apple's 0x92 avc1/avcC config packet, not
-                # as Annex-B param NALs.
-                for _p in payloads:
-                    if _p and _p[0] == APPLE_CONFIG_MARKER:
-                        _cfg = parse_avc_config(_p)
-                        if _cfg:
-                            nonlocal_state["sps"] = _cfg[0]
-                            all_pps[0] = _cfg[1]
-                for nalu in reassemble_h264(payloads):
+            grp_payloads = [p for _, _, p in packets]
+            if is_h264:
+                # H.264: 1-byte NAL header, IDR = type 5. SPS/PPS already
+                # harvested from the avcC wrapper above, so slices are all we
+                # classify here.
+                for nalu in reassemble_group_h264(grp_payloads):
                     if not nalu:
                         continue
-                    nonlocal_state.setdefault("hdr_bytes", set()).add(nalu[0])
-                    t = nalu[0] & 0x1F
-                    if t == NAL_SLICE_IDR:
+                    nt = nalu[0] & 0x1F
+                    if nt == H264_NAL_IDR:
                         last_idr[ti] = nalu
                         tile_nalus[ti] = [nalu]
-                    elif 1 <= t <= 5:
+                    elif nt in (H264_NAL_SPS, H264_NAL_PPS):
+                        continue   # params come via avcC, not in-band
+                    else:
                         tile_nalus[ti].append(nalu)
                 completed.add(key)
                 continue
-            for nalu in reassemble_group([p for _, _, p in packets]):
+            for nalu in reassemble_group(grp_payloads):
                 if len(nalu) < 2:
                     continue
                 nt = (nalu[0] >> 1) & 0x3F
-                nonlocal_state.setdefault("hdr_bytes", set()).add(nalu[0])
                 if nt == NAL_VPS:
                     nonlocal_state["vps"] = nalu
                 elif nt == NAL_SPS:
@@ -205,47 +215,36 @@ def gather_initial_burst(
         key: list(grp) for key, grp in ssrc_ts_groups.items() if key not in completed
     }
 
-    # CODEC-DETECT: the raw RTP payload header byte tells HEVC from H.264
-    # unambiguously (reassemble_group is HEVC-specific and mangles H.264, so use
-    # the raw header). HEVC: type=(b>>1)&0x3f in {VPS32,SPS33,PPS34,AP48,FU49}.
-    # H.264: forbidden bit clear and type=b&0x1f in {1,5,7,8,24,28,29}. Logged
-    # once per session so a starved HEVC harvest on an H.264 stream is legible.
-    _raw = nonlocal_state.get("raw_hdr", set())
-    _is_hevc = any(((b >> 1) & 0x3F) in (NAL_VPS, NAL_SPS, NAL_PPS, 48, 49) for b in _raw)
-    _is_h264 = any((b & 0x80) == 0 and (b & 0x1F) in (1, 5, 7, 8, 24, 28, 29) for b in _raw) and not _is_hevc
-    log.info(
-        "CODEC-DETECT: raw RTP headers=%s -> %s",
-        sorted(hex(b) for b in _raw),
-        "H.264/AVC" if _is_h264 else "HEVC" if _is_hevc else "unknown",
-    )
-
     vps_out = nonlocal_state["vps"]
     sps_out = nonlocal_state["sps"]
     # H.264 has no VPS; only SPS+PPS are required.
-    missing_params = (sps_out is None or not all_pps) if codec == "avc" else (
-        vps_out is None or sps_out is None or not all_pps)
-    if missing_params:
+    params_ok = (
+        (sps_out is not None and all_pps) if is_h264
+        else (vps_out is not None and sps_out is not None and all_pps)
+    )
+    if not params_ok:
         reason = "no-video-rtp" if len(udp_video_buf) < 20 else "missing-param-sets"
         raise BurstStarved(len(udp_video_buf), reason, deadline_seconds)
+    if is_h264 and vps_out is None:
+        vps_out = b""   # interface parity; the H.264 decoder ignores it
 
     log.info("PPS pool: %d", len(all_pps))
     for ti in sorted(tile_nalus.keys()):
         nt_counts: defaultdict[int, int] = defaultdict(int)
         for nalu in tile_nalus[ti]:
-            nt_counts[(nalu[0] >> 1) & 0x3F] += 1
+            nt_counts[(nalu[0] & 0x1F) if is_h264 else ((nalu[0] >> 1) & 0x3F)] += 1
         log.info("tile %d NALUs: %s", ti, dict(nt_counts))
     log.info("IDRs from burst: tiles %s", sorted(last_idr.keys()))
 
     return InitialBurst(
         processed_pkt_idx=processed,
         ssrc_to_tile=ssrc_to_tile,
-        vps=vps_out or b"",
+        vps=vps_out,
         sps=sps_out,
         all_pps=all_pps,
         last_idr=last_idr,
         tile_nalus=dict(tile_nalus),
         burst_pending=burst_pending,
-        codec=codec,
     )
 
 
