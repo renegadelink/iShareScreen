@@ -63,6 +63,7 @@ def load_last() -> Optional[ConnectFormValues]:
         frontend=str(data.get("frontend", "browser")),
         dynamic_resolution=bool(data.get("dynamic_resolution", False)),
         hidpi=str(data.get("hidpi", "auto")),
+        decoder=str(data.get("decoder", "auto")),
     )
 
 
@@ -84,6 +85,7 @@ def save_last(values: ConnectFormValues) -> None:
             "frontend": values.frontend,
             "dynamic_resolution": values.dynamic_resolution,
             "hidpi": values.hidpi,
+            "decoder": values.decoder,
         }
         p.write_text(json.dumps(data, indent=2))
         try:

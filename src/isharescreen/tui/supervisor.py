@@ -59,6 +59,8 @@ class ViewerArgs:
     auth: str = "srp"
     verbose: int = 0           # -v count to forward to worker
     log_file: Optional[str] = None  # --log-file to forward to worker
+    codec: Optional[str] = None     # --codec to forward to worker
+    decoder: Optional[str] = None   # --decoder to forward to worker ("auto" → omit)
     extra_env: dict[str, str] = field(default_factory=dict)
 
 
@@ -214,6 +216,10 @@ class Supervisor:
         argv += ["-v"] * max(0, args.verbose)
         if args.log_file:
             argv += ["--log-file", args.log_file]
+        if args.codec:
+            argv += ["--codec", args.codec]
+        if args.decoder and args.decoder != "auto":
+            argv += ["--decoder", args.decoder]
         return argv
 
     async def _pump_stderr(self) -> None:

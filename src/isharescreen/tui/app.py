@@ -203,6 +203,8 @@ class IssTuiApp(App):
             hidpi=form.hidpi,
             verbose=int(self._cli_viewer_flags.get("verbose", 0) or 0),
             log_file=self._cli_viewer_flags.get("log_file"),
+            codec=self._cli_viewer_flags.get("codec"),
+            decoder=form.decoder if form.decoder and form.decoder != "auto" else None,
         )
         try:
             await self._supervisor.start(args)
