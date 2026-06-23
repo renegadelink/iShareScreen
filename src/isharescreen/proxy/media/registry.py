@@ -218,14 +218,38 @@ def build_best(codec: str, *, override: Optional[str], num_tiles: int, **opts):
 
 # ── codec negotiation (moved here from hwcaps to break the import cycle) ──
 
+def _codec_implied_by_decoder(decoder_name: str) -> Optional[str]:
+    """Return the codec ('hevc' or 'avc') implied by a specific decoder name,
+    or None if the name is 'auto'/empty/unknown. Used by resolve_codec so that
+    forcing --decoder libav-avc420 also drives codec negotiation to 'avc',
+    preventing a mismatch where the server sends HEVC but the decoder is AVC."""
+    if not decoder_name or decoder_name in ("auto", ""):
+        return None
+    resolved = _ALIASES.get(decoder_name, decoder_name)
+    for s in _REGISTRY:
+        if s.name == resolved:
+            return s.codec
+    return None
+
+
 def resolve_codec(choice: str) -> str:
     """Resolve a `--codec` value to a concrete 'hevc' / 'avc'. 'auto' offers
     HEVC when any 4:4:4 decoder is available here, else H.264 4:2:0.
 
     Priority: HW HEVC 4:4:4 > AVC 4:2:0. Software HEVC 4:4:4 remains available
-    when HEVC is requested explicitly, but does not drive auto negotiation."""
+    when HEVC is requested explicitly, but does not drive auto negotiation.
+
+    When codec='auto', ISS_DECODER is also consulted: if the user forced a
+    decoder that only handles one codec (e.g. libav-avc420 → AVC), the codec
+    negotiation follows suit so the server sends the right stream."""
     if choice != "auto":
         return choice
+    import os as _os
+    _iss_dec = _os.environ.get("ISS_DECODER", "").strip().lower()
+    _implied = _codec_implied_by_decoder(_iss_dec)
+    if _implied:
+        log.info("codec=auto: ISS_DECODER=%s implies codec=%s", _iss_dec, _implied)
+        return _implied
     if can_decode("hevc", "444", hardware_only=True):
         log.info("codec=auto: a HEVC 4:4:4 hardware decoder is available -> hevc")
         return "hevc"
