@@ -2253,7 +2253,7 @@ class Session:
                 if offset + 2 + prefix_len > len(msg):
                     return
                 needs_post_layout_arm = False
-                if prefix_len >= 10:
+                if prefix_len >= 12:
                     sw = struct.unpack(">H", msg[offset + 4:offset + 6])[0]
                     sh = struct.unpack(">H", msg[offset + 6:offset + 8])[0]
                     bw = struct.unpack(">H", msg[offset + 8:offset + 10])[0]

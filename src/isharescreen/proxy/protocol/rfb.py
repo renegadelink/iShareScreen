@@ -239,7 +239,7 @@ def build_virtual_display(
     # display_type = 4 (virtual display).
     struct.pack_into(">I", di, 0x7E, 4)
 
-    # Physical dimensions from native capture (MacBook Pro panel).
+    # Physical dimensions from native macOS capture.
     struct.pack_into(">f", di, 0x82, 369.4545593261719)
     struct.pack_into(">f", di, 0x86, 207.81817626953125)
 

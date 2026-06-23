@@ -383,8 +383,8 @@ def run(
         v = (wy - oy) / rect_h if rect_h else 0.0
         u = min(1.0, max(0.0, u))
         v = min(1.0, max(0.0, v))
-        sx = int(u * cw)
-        sy = int(v * ch)
+        sx = min(cw - 1, int(u * cw))
+        sy = min(ch - 1, int(v * ch))
         return (max(0, min(canvas_w - 1, sx)),
                 max(0, min(canvas_h - 1, sy)))
 
