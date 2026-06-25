@@ -91,6 +91,12 @@ def _build_libav_hevc(num_tiles, *, enable_quality_gate=True, on_frame_published
                        on_frame_published=on_frame_published, prefer_hwaccel=prefer_hwaccel)
 
 
+def _build_libav_hevc_sw(num_tiles, *, enable_quality_gate=True, on_frame_published=None, **_):
+    from .hevc import HevcDecoder
+    return HevcDecoder(num_tiles=num_tiles, enable_quality_gate=enable_quality_gate,
+                       on_frame_published=on_frame_published, prefer_hwaccel=False)
+
+
 def _build_avc(num_tiles, *, enable_quality_gate=True, on_frame_published=None,
                prefer_hwaccel=True, **_):
     from .avc import AvcDecoder
@@ -129,6 +135,9 @@ _REGISTRY: list[DecoderSpec] = [
     DecoderSpec("qsv-hevc444", "hevc", "444", ("win32", "linux"), "hardware", 50,
                 available=lambda: _hevc444_method() == "qsv", build=_build_qsv,
                 note="Intel Quick Sync (hevc_qsv) — fallback where generic DXVA lacks 4:4:4"),
+    DecoderSpec("libav-hevc444-sw", "hevc", "444", ("*",), "software", 20,
+                available=lambda: True, build=_build_libav_hevc_sw,
+                note="libav software HEVC 4:4:4 — last resort; slow for live 4-tile streams"),
     DecoderSpec("libav-avc420", "avc", "420", ("*",), "hardware", 50,
                 available=lambda: True, build=_build_avc,
                 note="libav H.264 + platform hwaccel, SW fallback (incl. AMD VCN POC-wrap workaround)"),

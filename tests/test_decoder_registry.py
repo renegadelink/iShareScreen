@@ -29,7 +29,7 @@ def test_candidates_platform_filtered_and_sorted(monkeypatch):
     monkeypatch.setattr(R.sys, "platform", "win32")
     names = [s.name for s in R.candidates("hevc")]
     assert "vt-hevc444" not in names                    # darwin-only filtered
-    assert names == ["libav-hevc444", "qsv-hevc444"]    # hw, prio 60 > 50
+    assert names == ["libav-hevc444", "qsv-hevc444", "libav-hevc444-sw"]  # hw prio 60>50, then sw
 
     monkeypatch.setattr(R.sys, "platform", "darwin")
     names = [s.name for s in R.candidates("hevc")]
@@ -49,9 +49,11 @@ def test_windows_prefers_generic_then_qsv(monkeypatch):
     assert R.select("hevc").name == "qsv-hevc444"        # QSV is the fallback
 
     monkeypatch.setattr(R, "_hevc444_method", lambda: None)
-    assert R.select("hevc") is None                      # no HW 4:4:4 here
-    assert R.can_decode("hevc", "444") is False
-    assert R.resolve_codec("auto") == "avc"              # → falls back to AVC
+    # libav-hevc444-sw (software) is always available, so select() never returns None
+    assert R.select("hevc").name == "libav-hevc444-sw"
+    assert R.can_decode("hevc", "444") is True           # SW decoder available
+    assert R.can_decode("hevc", "444", hardware_only=True) is False
+    assert R.resolve_codec("auto") == "avc"              # auto ignores SW → falls back to AVC
 
 
 def test_macos_prefers_vt_then_libav(monkeypatch):

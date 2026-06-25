@@ -120,6 +120,11 @@ class VTHevcDecoder:
         self._lock = threading.Lock()          # guards session create/teardown
         self._seen_fmt = False
         self._fmt_warned = False                # H1: warn once on non-nv24 output
+        # Decode latency monitoring: EMA of submit→frame round-trip (ms).
+        # VT decode is synchronous on the RX thread, so this is the HW decode
+        # time per NAL. Shared with the control-socket snapshot.
+        self._decode_latency_ms: float = 0.0
+        self._submit_t: float = 0.0
 
     # -- params / session ---------------------------------------------------
 
@@ -230,6 +235,7 @@ class VTHevcDecoder:
             return
         self._seq += 1
         seq = self._seq
+        self._submit_t = time.monotonic()
         def _handler(status, info_flags, image_buffer, pts, dur,
                      _ti=tile_idx, _seq=seq):
             self._on_decoded(_ti, _seq, status, image_buffer)
@@ -319,6 +325,9 @@ class VTHevcDecoder:
                     log.info("VT publish gap %.2fs — host idle (fed %d)", gap, fed)
         self._last_pub_t = now
         self._feeds_at_last_pub = self._feed_total
+        if self._submit_t > 0.0:
+            latency_ms = (now - self._submit_t) * 1000
+            self._decode_latency_ms = 0.1 * latency_ms + 0.9 * self._decode_latency_ms
         # The clean-frame half of the gate's two-condition recovery clear
         # (pairs with mark_idr_observed). Lets `keyframe_required` discharge
         # so the FIR storm stops once a real frame flows again.
@@ -421,6 +430,22 @@ class VTHevcDecoder:
         """Tiles the gate considers gray/concealing and awaiting recovery.
         Delegates to the gate (decoder-agnostic), matching HevcDecoder."""
         return self._gate.bad_tiles
+
+    @property
+    def decode_latency_ms(self) -> float:
+        return self._decode_latency_ms
+
+    @property
+    def decode_queue_depth(self) -> int:
+        return 0  # synchronous VT path has no queue
+
+    @property
+    def decode_queue_cap(self) -> int:
+        return 0
+
+    @property
+    def decode_queue_drops(self) -> int:
+        return 0
 
     # -- lifecycle ----------------------------------------------------------
 
