@@ -41,11 +41,17 @@ struct VsOut {
 };
 
 // uv_scale maps the viewport's [0,1] sampling range onto just the
-// decoded-content sub-region of the textures, cropping out any black
+// decoded-content sub-region of the LUMA texture, cropping out any black
 // padding the encoder left when the real frame is smaller than the
 // allocated canvas. (1,1) = sample the whole texture.
+// chroma_scale is uv_scale shrunk by the chroma subsample ratio (== uv_scale
+// for 4:4:4; half for 4:2:0). H.264/AVC is 4:2:0, so its half-res chroma is
+// written into the top-left of the full-size U/V textures; chroma_scale makes
+// the shader sample just that sub-region and the bilinear sampler upsamples
+// chroma to luma resolution — no CPU 4:2:0→4:4:4 upsample needed.
 struct Uniforms {
     uv_scale: vec2<f32>,
+    chroma_scale: vec2<f32>,
 };
 @group(0) @binding(4) var<uniform> U: Uniforms;
 
@@ -76,10 +82,11 @@ fn vs(@builtin(vertex_index) i: u32) -> VsOut {
 
 @fragment
 fn fs(in: VsOut) -> @location(0) vec4<f32> {
-    let uv = in.uv * U.uv_scale;
-    let y  = textureSample(y_tex, samp, uv).r;
-    let cb = textureSample(u_tex, samp, uv).r - 0.5;
-    let cr = textureSample(v_tex, samp, uv).r - 0.5;
+    let luv = in.uv * U.uv_scale;
+    let cuv = in.uv * U.chroma_scale;
+    let y  = textureSample(y_tex, samp, luv).r;
+    let cb = textureSample(u_tex, samp, cuv).r - 0.5;
+    let cr = textureSample(v_tex, samp, cuv).r - 0.5;
     let r = y + 1.5748   * cr;
     let g = y - 0.187324 * cb - 0.468124 * cr;
     let b = y + 1.8556   * cb;
@@ -207,6 +214,11 @@ class Renderer:
         # tile lands; the biplanar pipeline is built lazily on the first
         # nv24 tile (see `_ensure_biplanar`).
         self._mode: "str | None" = None
+        # Chroma subsample ratio (chroma_width/width, chroma_height/height),
+        # captured from the first tile. (1,1) for 4:4:4 (HEVC), (0.5,0.5) for
+        # 4:2:0 (H.264/AVC). draw() multiplies uv_scale by this to get the
+        # shader's chroma_scale, so half-res chroma sampled correctly.
+        self._chroma_ratio: tuple[float, float] = (1.0, 1.0)
 
         tex_kw = dict(
             format=wgpu.TextureFormat.r8unorm,
@@ -261,7 +273,7 @@ class Renderer:
         )
         device.queue.write_buffer(
             self._uniform_buf, 0,
-            np.array([1.0, 1.0, 0.0, 0.0], dtype=np.float32).tobytes(),
+            np.array([1.0, 1.0, 1.0, 1.0], dtype=np.float32).tobytes(),
         )
         tex_entry = {
             "visibility": wgpu.ShaderStage.FRAGMENT,
@@ -434,6 +446,10 @@ class Renderer:
         # flips mid-stream.
         if self._mode is None:
             self._mode = "biplanar" if tile.is_nv12_passthrough else "planar"
+            self._chroma_ratio = (
+                tile.chroma_width / tile.width if tile.width else 1.0,
+                tile.chroma_height / tile.height if tile.height else 1.0,
+            )
             if self._mode == "biplanar":
                 self._ensure_biplanar()
         origin = (0, origin_y, 0)
@@ -606,9 +622,15 @@ class Renderer:
         # on either axis independently.
         ux = cw / self._w if self._w else 1.0
         uy = ch / self._h if self._h else 1.0
+        # chroma_scale = uv_scale shrunk by the chroma subsample ratio
+        # (== uv_scale for 4:4:4, half for 4:2:0). The half-res chroma is
+        # written into the top-left of the full-size U/V textures, so the
+        # shader samples just that sub-region and the bilinear sampler
+        # upsamples it to luma resolution — no CPU 4:2:0→4:4:4 upsample.
+        crx, cry = self._chroma_ratio
         self._device.queue.write_buffer(
             self._uniform_buf, 0,
-            np.array([ux, uy, 0.0, 0.0], dtype=np.float32).tobytes(),
+            np.array([ux, uy, ux * crx, uy * cry], dtype=np.float32).tobytes(),
         )
         # Fill the whole window (the pre-rework baseline behavior). The window
         # is aspect-locked to the content (see app.py), so a free resize fills
