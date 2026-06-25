@@ -133,6 +133,15 @@ def _make_parser() -> argparse.ArgumentParser:
         ),
     )
     g.add_argument(
+        "--codec", choices=["auto", "hevc", "avc"], default="auto",
+        help=(
+            "video codec: 'auto' (default) probes GPU capability and picks "
+            "HEVC 4:4:4 when available, else H.264 4:2:0; 'hevc' forces "
+            "HEVC; 'avc' forces H.264 (hardware-decodable on Windows/Linux "
+            "where 4:4:4 isn't)"
+        ),
+    )
+    g.add_argument(
         "--list-decoders", action="store_true",
         help=("print the decoder capability matrix (with live availability on "
               "this machine) and exit"),
