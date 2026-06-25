@@ -30,11 +30,25 @@ def tiles_per_frame() -> int:
     macOS honors it, so this is also the number of video SSRCs/tiles to expect
     in the stream. Default 4 = Apple SS.app's byte-identical offer (4 parallel
     H.264 sub-streams); ISS_TILES_PER_FRAME=1 asks for a single picture per
-    frame (browser-WebCodecs-decodable, no cross-tile references)."""
+    frame (browser-WebCodecs-decodable, no cross-tile references).
+
+    Codec-dependent default: AVC defaults to 1, HEVC to 4. Apple's 4-tile
+    stream uses CROSS-TILE references (a tile's P-frames reference POCs owned
+    by other tiles). Our HEVC path decodes through native VideoToolbox, which
+    matches Apple's own reference model and follows that structure fine. The
+    AVC path decodes the four interleaved H.264 sub-streams in one shared
+    libav context, which resolves the cross-tile references to the wrong
+    tile's pictures — no decode error, so the corrupted frame is published and
+    drift/ghosting ("fleas") accumulates under motion. Requesting a single
+    self-contained picture per frame removes the cross-tile dimension so libav
+    decodes cleanly (the same workaround the browser frontend already uses).
+    An explicit ISS_TILES_PER_FRAME always wins."""
+    codec = _os.environ.get("ISS_VIDEO_CODEC", "").lower()
+    default = "1" if codec == "avc" else "4"
     try:
-        return max(1, int(_os.environ.get("ISS_TILES_PER_FRAME", "4")))
+        return max(1, int(_os.environ.get("ISS_TILES_PER_FRAME", default)))
     except ValueError:
-        return 4
+        return 1 if codec == "avc" else 4
 
 
 # ── protobuf helpers ──────────────────────────────────────────────────
