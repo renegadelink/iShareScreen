@@ -173,10 +173,13 @@ def candidates(codec: str, chroma: Optional[str] = None) -> list[DecoderSpec]:
     return out
 
 
-def can_decode(codec: str, chroma: str) -> bool:
+def can_decode(codec: str, chroma: str, *, hardware_only: bool = False) -> bool:
     """True if any available decoder here handles (codec, chroma). Drives codec
-    negotiation."""
-    return any(s.available() for s in candidates(codec, chroma))
+    negotiation. Pass hardware_only=True to exclude software decoders."""
+    specs = candidates(codec, chroma)
+    if hardware_only:
+        specs = [s for s in specs if s.kind == "hardware"]
+    return any(s.available() for s in specs)
 
 
 def select(codec: str, *, override: Optional[str] = None) -> Optional[DecoderSpec]:

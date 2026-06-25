@@ -42,7 +42,7 @@ from .input import InputController
 from .media.aac_eld import AacEldDecoder, make_aac_eld_decoder
 from .media.hevc import HevcDecoder
 from .media.avc import AvcDecoder
-from .media.nalu import first_donl, reassemble_group, reassemble_group_h264, is_avc_config
+from .media.nalu import first_donl, reassemble_group
 from .media.avc_nalu import reassemble_h264
 from .media.registry import resolve_codec
 from .media.quality_gate import TileVisState
