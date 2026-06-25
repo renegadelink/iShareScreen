@@ -31,10 +31,11 @@ from typing import Callable, Optional
 import av
 
 from .avc_nalu import h264_nal_type
-from .hevc import (
+from .decode_common import (
     _CODEC_FLAG_LOW_DELAY, _CODEC_FLAG2_FAST,
-    _NAL_START_CODE, _TileSlot, _av_frame_to_tile, TileFrame,
+    _NAL_START_CODE, _TileSlot, _av_frame_to_tile,
 )
+from .tiles import TileFrame
 from .quality_gate import FrameQualityGate
 
 log = logging.getLogger(__name__)
