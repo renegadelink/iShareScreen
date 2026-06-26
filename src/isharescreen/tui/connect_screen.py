@@ -57,11 +57,12 @@ _RESOLUTION_PRESETS: list[tuple[str, str]] = [
 _DEFAULT_RESOLUTION = "1920x1080"  # native-FHD = the safest pick
 
 _DECODER_PRESETS: list[tuple[str, str]] = [
-    ("Auto — best available",                      "auto"),
-    ("Intel QSV  (hevc_qsv, HW)",                 "qsv-hevc444"),
-    ("Generic HW  (d3d11va / vaapi / cuda)",       "libav-hevc444"),
-    ("Software  (CPU, slow)",                      "libav-hevc444-sw"),
-    ("H.264 4:2:0  (AVC legacy)",                 "libav-avc420"),
+    ("Auto",                 "auto"),
+    ("HEVC — VideoToolbox",  "vt-hevc444"),
+    ("HEVC — Generic HW",    "libav-hevc444"),
+    ("HEVC — Intel QSV",     "qsv-hevc444"),
+    ("HEVC — Software",      "libav-hevc444-sw"),
+    ("H.264",                "libav-avc420"),
 ]
 _DEFAULT_DECODER = "auto"
 
