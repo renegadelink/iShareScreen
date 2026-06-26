@@ -205,14 +205,27 @@ def gather_initial_burst(
         key: list(grp) for key, grp in ssrc_ts_groups.items() if key not in completed
     }
 
-    # CODEC-DETECT: the raw RTP payload header byte tells HEVC from H.264
-    # unambiguously (reassemble_group is HEVC-specific and mangles H.264, so use
-    # the raw header). HEVC: type=(b>>1)&0x3f in {VPS32,SPS33,PPS34,AP48,FU49}.
-    # H.264: forbidden bit clear and type=b&0x1f in {1,5,7,8,24,28,29}. Logged
-    # once per session so a starved HEVC harvest on an H.264 stream is legible.
-    _raw = nonlocal_state.get("hdr_bytes", set())
-    _is_hevc = any(((b >> 1) & 0x3F) in (NAL_VPS, NAL_SPS, NAL_PPS, 48, 49) for b in _raw)
-    _is_h264 = any((b & 0x80) == 0 and (b & 0x1F) in (1, 5, 7, 8, 24, 28, 29) for b in _raw) and not _is_hevc
+    # CODEC-DETECT: infer codec from observed NALU first bytes.
+    # HEVC: nal_unit_type=(b>>1)&0x3f in {VPS=32,SPS=33,PPS=34,AP=48,FU=49}.
+    # H.264: forbidden=0 and nal_unit_type=b&0x1f in {1,5,7,8,24,28,29}.
+    # H.264 data partition NALUs (types 2-4) byte-collide with HEVC FU/SPS/PPS
+    # (e.g. type-2 byte 0x62 = HEVC FU type 49). When codec=avc and only
+    # transport/FU bytes appear without HEVC VPS/SPS/PPS parameter-set bytes,
+    # treat the stream as H.264 to avoid a false-positive HEVC classification.
+    _raw = nonlocal_state.get("hdr_bytes", set()) | nonlocal_state.get("raw_hdr", set())
+    _has_hevc_params = any(((b >> 1) & 0x3F) in (NAL_VPS, NAL_SPS, NAL_PPS) for b in _raw)
+    # HEVC AP (type 48, byte 0x60/0x61) is unambiguous: H.264 uses STAP-A
+    # (type 24, byte 0x78) instead. HEVC FU (type 49, byte 0x62/0x63) is
+    # ambiguous — it collides with H.264 data partition type 2/3.
+    _has_hevc_ap  = any(((b >> 1) & 0x3F) == 48 for b in _raw)
+    _has_hevc_fu  = any(((b >> 1) & 0x3F) == 49 for b in _raw)
+    _is_hevc = _has_hevc_params or _has_hevc_ap or _has_hevc_fu
+    _is_h264 = any((b & 0x80) == 0 and (b & 0x1F) in (1, 5, 7, 8, 24, 28, 29) for b in _raw) and not _has_hevc_params
+    # Tiebreaker for ambiguous FU bytes only: if codec=avc and no AP packets
+    # (which would be conclusive HEVC evidence), treat as H.264 data partition.
+    if _has_hevc_fu and not _has_hevc_params and not _has_hevc_ap and not _is_h264 and codec == "avc":
+        _is_hevc = False
+        _is_h264 = True
     log.info(
         "CODEC-DETECT: raw RTP headers=%s -> %s",
         sorted(hex(b) for b in _raw),
