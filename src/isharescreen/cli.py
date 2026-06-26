@@ -374,6 +374,16 @@ def _run_frontend(config: SessionConfig, args: argparse.Namespace) -> int:
     WebCodecs, H.264 pass-through) since every machine has a browser; the
     native wgpu/desktop viewer stays available via --frontend desktop."""
     if args.frontend == "desktop":
+        # Auto codec ladder: offer HEVC when this machine has a HEVC 4:4:4
+        # hardware decoder (VideoToolbox / generic HW / QSV), else fall back to
+        # H.264 (libav-avc420, HW with SW floor). Only force AVC here — when
+        # HEVC HW is present we leave ISS_VIDEO_CODEC unset so the proven
+        # "both"-bank offer (Apple-byte-identical → server sends HEVC) is
+        # unchanged. An explicit --codec / --decoder still wins (env already set).
+        if args.codec == "auto" and "ISS_VIDEO_CODEC" not in os.environ:
+            from .proxy.media.registry import resolve_codec
+            if resolve_codec("auto") == "avc":
+                os.environ["ISS_VIDEO_CODEC"] = "avc"
         from isharescreen.frontend.desktop.app import run as run_desktop
         return run_desktop(config, auto_quit_secs=args.auto_quit_secs)
     # browser (default): H.264 pass-through needs the AVC codec path. The
