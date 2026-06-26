@@ -216,15 +216,23 @@ def _build_mediablob(mode: int, session_id: int, timestamp: int) -> bytes:
         # before wiring a real H.264 decode path. ISS_VIDEO_CODEC=hevc forces
         # HEVC-only.
         _codec = _os.environ.get("ISS_VIDEO_CODEC", "both").lower()
-        # NOTE: the bank variables are named backwards. Live testing
-        # PROVED field1=123 (`hevc_bank`) makes the server send H.264 4:2:0 and
-        # field1=100 (`avc_bank`) makes it send HEVC 4:4:4. Select by the TRUE
-        # codec; "both" keeps Apple's byte-identical order (123 then 100).
+        # DANGER — the bank variables are named for the PARAMS they carry, but
+        # the server's response is INVERTED from that. Live testing PROVED:
+        #   hevc_bank (field1=123, HEVC params) → server sends H.264 4:2:0
+        #   avc_bank  (field1=100, AVC params)  → server sends HEVC 4:4:4
+        # So selecting "the bank named for the codec you want" is WRONG and
+        # was the 84f475e regression (AVC request → HEVC stream → burst starved).
+        # Select by OUTPUT via these aliases; do NOT collapse them back to the
+        # name-matching form.
+        bank_yields_h264 = hevc_bank   # field1=123
+        bank_yields_hevc = avc_bank    # field1=100
         if _codec == "avc":
-            _codec_banks = _field_bytes(3, avc_bank)    # AVC bank, PT 123
+            _codec_banks = _field_bytes(3, bank_yields_h264)
         elif _codec == "hevc":
-            _codec_banks = _field_bytes(3, hevc_bank)   # HEVC bank, PT 100
+            _codec_banks = _field_bytes(3, bank_yields_hevc)
         else:
+            # "both" = Apple's byte-identical order (123 then 100); server picks
+            # its preferred (HEVC 4:4:4) — the default native path.
             _codec_banks = _field_bytes(3, hevc_bank) + _field_bytes(3, avc_bank)
         desc = (
             _field_varint(1, session_id) + _field_varint(2, 1 if ltrp_on else 0)
