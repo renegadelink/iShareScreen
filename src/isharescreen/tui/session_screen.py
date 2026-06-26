@@ -523,11 +523,15 @@ class SessionScreen(Screen):
         # Bump the header chips so a normal user sees that something
         # warrants attention even if their eyes are on the wgpu window.
         lvl, _ = _classify_loglevel(line)
+        if lvl not in ("ERROR", "CRITICAL", "FATAL", "WARNING"):
+            return
+        try:
+            hdr = self.query_one("#hdr", HeaderBar)
+        except NoMatches:
+            return
         if lvl in ("ERROR", "CRITICAL", "FATAL"):
-            hdr = self.query_one("#hdr", HeaderBar)
             hdr.errors = hdr.errors + 1
-        elif lvl == "WARNING":
-            hdr = self.query_one("#hdr", HeaderBar)
+        else:
             hdr.warnings = hdr.warnings + 1
 
     def set_state(self, state: str) -> None:
