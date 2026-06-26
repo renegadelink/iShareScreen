@@ -304,6 +304,12 @@ class Session:
             "avc" if os.environ.get("ISS_VIDEO_CODEC", "").lower() == "avc"
             else "hevc"
         )
+        # AVC hardware-decode periodic IDR re-anchor (d3d11va POC-wrap
+        # workaround). The full machinery (_maybe_reanchor + _tx_loop driver)
+        # lives on the AVC feature branch and is NOT ported here; pin to False
+        # so the AVC decoder-selection branch uses the normal path. Re-enabling
+        # requires porting _maybe_reanchor — do not just flip this.
+        self._avc_reanchor_enabled: bool = False
         # Runtime-updated canvas dimensions from AppleDisplayLayout (0x451).
         # `_runtime_canvas_*` = backing/pixel size (decoded frame dimensions).
         # `_runtime_scaled_*` = logical/scaled size (window/client coordinate space).
