@@ -25,6 +25,10 @@ from .control_client import ControlClient
 from .session_screen import SessionScreen
 from .storage import bug_snapshot_path, load_last, save_last
 from .supervisor import Supervisor, ViewerArgs
+from ..proxy.media.registry import all_specs as _all_decoder_specs
+
+# decoder name → codec, built once from the registry so it stays in sync.
+_DECODER_TO_CODEC: dict[str, str] = {s.name: s.codec for s in _all_decoder_specs()}
 
 
 log = logging.getLogger("iss.tui.app")
@@ -203,7 +207,8 @@ class IssTuiApp(App):
             hidpi=form.hidpi,
             verbose=int(self._cli_viewer_flags.get("verbose", 0) or 0),
             log_file=self._cli_viewer_flags.get("log_file"),
-            codec=self._cli_viewer_flags.get("codec"),
+            codec=(self._cli_viewer_flags.get("codec")
+                   or _DECODER_TO_CODEC.get(form.decoder or "")),
             decoder=form.decoder if form.decoder and form.decoder != "auto" else None,
         )
         try:
