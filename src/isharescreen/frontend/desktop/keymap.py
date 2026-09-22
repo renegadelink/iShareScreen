@@ -15,9 +15,24 @@ Key events are split between two callbacks:
 """
 from __future__ import annotations
 
+import sys
+
 import glfw
 
 from ...proxy.protocol.rfb import BTN_LEFT, BTN_MIDDLE, BTN_RIGHT
+
+
+def option_keysyms(platform: str) -> tuple[int, int]:
+    """Keysyms for the left/right Alt (Option) keys.
+
+    screensharingd maps Meta_L/R to Option and Alt_L/R to Command. A Mac's
+    Option key must therefore be sent as Meta; a PC's Alt key sits where
+    Command does (beside the space bar), so it stays Alt.
+    """
+    return (0xffe7, 0xffe8) if platform == "darwin" else (0xffe9, 0xffea)
+
+
+_ALT_L, _ALT_R = option_keysyms(sys.platform)
 
 
 # Physical glfw key code → X11 keysym. Only special / non-printable
@@ -42,8 +57,8 @@ GLFW_KEY_TO_X11: dict[int, int] = {
     glfw.KEY_RIGHT_SHIFT:   0xffe2,
     glfw.KEY_LEFT_CONTROL:  0xffe3,
     glfw.KEY_RIGHT_CONTROL: 0xffe4,
-    glfw.KEY_LEFT_ALT:      0xffe9,
-    glfw.KEY_RIGHT_ALT:     0xffea,
+    glfw.KEY_LEFT_ALT:      _ALT_L,
+    glfw.KEY_RIGHT_ALT:     _ALT_R,
     glfw.KEY_LEFT_SUPER:    0xffeb,
     glfw.KEY_RIGHT_SUPER:   0xffec,
     glfw.KEY_CAPS_LOCK:     0xffe5,
@@ -59,6 +74,11 @@ GLFW_KEY_TO_X11: dict[int, int] = {
 }
 
 
+# On macOS, Option + key types a character that on_char sends, so on_key
+# must not also send the base key (the host would type both).
+OPTION_TYPES_TEXT = sys.platform == "darwin"
+
+
 def glfw_button_to_rfb_bit(glfw_button: int) -> int:
     """Translate a glfw mouse-button code to Apple's RFB pointer-mask
     bit. Returns 0 for unsupported buttons (extras 4 + 5)."""
@@ -71,4 +91,5 @@ def glfw_button_to_rfb_bit(glfw_button: int) -> int:
     return 0
 
 
-__all__ = ["GLFW_KEY_TO_X11", "glfw_button_to_rfb_bit"]
+__all__ = ["GLFW_KEY_TO_X11", "OPTION_TYPES_TEXT", "glfw_button_to_rfb_bit",
+           "option_keysyms"]
