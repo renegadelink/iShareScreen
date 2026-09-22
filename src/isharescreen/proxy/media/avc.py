@@ -113,9 +113,12 @@ def _patch_avc_sps_dpb(sps: bytes) -> bytes:
                 ue()
         ms, me, mnrf = ue()       # max_num_ref_frames
 
+        # macOS VideoToolbox HW decode refuses more than 10 refs: use 10 when it
+        # covers Apple's declared refs + 1, else 16 (software).
+        target_refs = 10 if sys.platform == "darwin" and mnrf < 10 else 16
         new_bits = bits
-        if mnrf < 16:
-            code = 16 + 1         # Exp-Golomb encode ue(16)
+        if mnrf < target_refs:
+            code = target_refs + 1  # Exp-Golomb encode ue(target_refs)
             nz = code.bit_length() - 1
             enc = [0] * nz + [(code >> (nz - j)) & 1 for j in range(nz + 1)]
             new_bits = bits[:ms] + enc + bits[me:]
@@ -151,6 +154,30 @@ _H264_HWACCELS: dict[str, tuple[str, ...]] = {
 
 def _h264_hwaccels() -> tuple[str, ...]:
     return _H264_HWACCELS.get(sys.platform, _H264_HWACCELS["*"])
+
+
+def _vt_accepts_h264(sps: bytes, pps: bytes) -> bool:
+    """True if VideoToolbox can hardware-decode these parameter sets.
+
+    Checked up front so a refused canvas uses software without disabling
+    hardware for later resizes. Unknown returns True (libav tries, as before).
+    """
+    try:
+        import CoreMedia as _CM
+        import VideoToolbox as _VT
+        st, fmt = _CM.CMVideoFormatDescriptionCreateFromH264ParameterSets(
+            None, 2, (bytes(sps), bytes(pps)), (len(sps), len(pps)), 4, None)
+        if st != 0 or fmt is None:
+            return True
+        spec = {_VT.kVTVideoDecoderSpecification_RequireHardwareAcceleratedVideoDecoder: True}
+        st, session = _VT.VTDecompressionSessionCreate(None, fmt, spec, None, None, None)
+        if st != 0 or session is None:
+            return False
+        _VT.VTDecompressionSessionInvalidate(session)
+        return True
+    except Exception as e:
+        log.debug("VideoToolbox H.264 pre-check unavailable: %s", e)
+        return True
 
 
 # pts→tile routing map bounds. Each fed slice gets a monotonic pts and the map
@@ -289,6 +316,7 @@ class AvcDecoder:
     def _build_extradata(self) -> bytes:
         patched_sps = _patch_avc_sps_dpb(self._sps)
         self._sps_patch_applied = patched_sps != self._sps
+        self._patched_sps = patched_sps
         return _NAL_START_CODE + patched_sps + _NAL_START_CODE + self._pps
 
     def _ensure_codec_locked(self) -> Optional[av.codec.context.CodecContext]:
@@ -297,7 +325,13 @@ class AvcDecoder:
         if self._codec is not None or not (self._sps and self._pps):
             return self._codec
         extradata = self._build_extradata()
-        if self._prefer_hwaccel and not self._hw_failed:
+        hw_allowed = self._prefer_hwaccel and not self._hw_failed
+        if (hw_allowed and sys.platform == "darwin"
+                and not _vt_accepts_h264(self._patched_sps, self._pps)):
+            log.info("AVC: VideoToolbox won't hardware-decode this canvas "
+                     "(reference-frame count); software until the next resize")
+            hw_allowed = False
+        if hw_allowed:
             for hw_type in _h264_hwaccels():
                 ctx = self._try_hwaccel_locked(hw_type, extradata)
                 if ctx is not None:
