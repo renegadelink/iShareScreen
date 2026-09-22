@@ -1402,6 +1402,11 @@ def run(
             renderer.upload_tile(ti, tf, slot_h)
             any_fresh = True
 
+        # Flush staged uploads every frame; without a draw (e.g. window hidden)
+        # they pile up and flood the GPU driver on the next submit.
+        if any_fresh:
+            device.queue.submit([])
+
         # Present after a fresh upload, OR when the overlay cursor moved or
         # changed shape — otherwise a pointer that moves/reshapes over a
         # static screen (no fresh tile) would never repaint, freezing the
