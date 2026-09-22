@@ -23,7 +23,7 @@ from ...proxy.protocol.negotiation import AdvertiseDims
 from ...proxy.session import Session, SessionConfig
 from .audio_sink import make_audio_sink
 from .gpu import Renderer
-from .keymap import GLFW_KEY_TO_X11, glfw_button_to_rfb_bit
+from .keymap import GLFW_KEY_TO_X11, OPTION_TYPES_TEXT, glfw_button_to_rfb_bit
 
 
 # X11 keysyms for the Cmd-equivalent (Super_L / Super_R). When Ctrl→Cmd
@@ -665,6 +665,8 @@ def run(
             # raw ASCII letter / digit. X11 keysyms for A–Z and 0–9
             # are just their ASCII codepoints.
             held = mods & (glfw.MOD_CONTROL | glfw.MOD_SUPER | glfw.MOD_ALT)
+            if held == glfw.MOD_ALT and OPTION_TYPES_TEXT:
+                return  # Option + key types a character; on_char sends it
             if held and glfw.KEY_A <= key <= glfw.KEY_Z:
                 keysym = ord("a") + (key - glfw.KEY_A)
             elif held and glfw.KEY_0 <= key <= glfw.KEY_9:
@@ -820,6 +822,8 @@ def run(
             keysym = GLFW_KEY_TO_X11.get(key, 0)
             if keysym == 0:
                 held = mods & (glfw.MOD_CONTROL | glfw.MOD_SUPER | glfw.MOD_ALT)
+                if held == glfw.MOD_ALT and OPTION_TYPES_TEXT:
+                    return
                 if held and glfw.KEY_A <= key <= glfw.KEY_Z:
                     keysym = ord("a") + (key - glfw.KEY_A)
                 elif held and glfw.KEY_0 <= key <= glfw.KEY_9:
