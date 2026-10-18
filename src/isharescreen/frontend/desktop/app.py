@@ -359,6 +359,15 @@ def run(
     adv = config.advertise
     win_w = (adv.width if adv else 0) or scaled_w or canvas_w
     win_h = (adv.height if adv else 0) or scaled_h or canvas_h
+    # Give the window a stable identity (Wayland app_id / X11 WM_CLASS).
+    # GLFW leaves both empty by default, so compositors and window rules
+    # (Hyprland windowrules, keybind-passthrough tools, etc.) can only
+    # match iss by its title, which changes per session. rendercanvas never
+    # resets window hints, so these carry through to every window it builds.
+    glfw.init()
+    glfw.window_hint_string(glfw.WAYLAND_APP_ID, "isharescreen")
+    glfw.window_hint_string(glfw.X11_CLASS_NAME, "isharescreen")
+    glfw.window_hint_string(glfw.X11_INSTANCE_NAME, "isharescreen")
     window = RenderCanvas(title=title, size=(win_w, win_h), max_fps=120)
     glfw_window = window._window  # for raw glfw input callbacks only
     # Lock the window to the content's aspect ratio so the stream always fills
