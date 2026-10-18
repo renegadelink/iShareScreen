@@ -1,0 +1,244 @@
+/*
+ * liquid-glass-overlay.css — the same Liquid Glass material, for panels over a live
+ * WebGL / canvas scene (3D twins, maps, video walls).
+ *
+ * NO backdrop-filter. Blurring the backdrop makes the compositor read back
+ * and blur the panel's region every frame, and the cost scales with the
+ * panel's AREA, not the blur radius: on the conveyor twin's HUD it measured
+ * 6 ms/frame (25.6 ms with blur vs 19.6 ms without). So the glass is faked: a
+ * translucent white gradient, a highlight along the top edge, a soft green
+ * shadow — and a faint solid white base under long panels so busy scenery
+ * (hazard stripes, racking) never shows through the numbers.
+ *
+ * Tokens match liquid-glass.css exactly, so an app page and the 3D view embedded
+ * in it read as one product. Use this file INSTEAD of liquid-glass.css on the
+ * scene page, not as well as it.
+ */
+:root {
+  --ink: #10241a;
+  --ink-2: #3f5248;
+  --ink-3: #4a5c54;
+  --bg: #eef3ee;
+  --brand-deep: #0f4f34;
+  --brand-green: #1a6f3a;
+  --brand-mid: #5fae52;
+  --brand-lime: #a8cc4a;
+  --accent: #127942;
+  --ok: #188a3c;
+  --warn: #9a6808;
+  --err: #d2453c;
+
+  --line: rgba(16, 36, 26, 0.1);
+  --line-2: rgba(16, 36, 26, 0.18);
+  --fill: rgba(16, 36, 26, 0.06);
+  --glass: linear-gradient(180deg, rgba(255, 255, 255, 0.78), rgba(255, 255, 255, 0.58));
+  --glass-solid: linear-gradient(180deg, rgba(255, 255, 255, 0.95), rgba(248, 251, 248, 0.9));
+  --glass-edge: 1px solid rgba(255, 255, 255, 0.7);
+  --glass-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.9), 0 8px 28px rgba(15, 79, 52, 0.14);
+  --r-panel: 16px;
+  --r-ctl: 10px;
+  --r-pill: 999px;
+  --ease: cubic-bezier(.2, .8, .2, 1);
+  --ease-exit: cubic-bezier(.4, 0, 1, 1);
+  --well: #f7faf7;
+  --ok-ink: #0f7a36;
+  --warn-ink: #8a5d06;
+  --err-ink: #a8302a;
+
+  --font: -apple-system, "SF Pro Text", "Segoe UI", Inter, system-ui, sans-serif;
+  --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+  --tap: 44px;
+}
+
+/* Coarse pointers get a larger target than the 44px project default. */
+@media (pointer: coarse) {
+  :root { --tap: 48px; }
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  height: 100%;
+  overflow: hidden;
+  background: var(--bg);
+  color: var(--ink);
+  font-family: var(--font);
+  font-size: 14px;
+  -webkit-font-smoothing: antialiased;
+  font-variant-numeric: tabular-nums;
+}
+
+/* The scene fills the window. Mark the canvas aria-hidden and keep an
+   equivalent DOM list; touch-action is limited to this engaged viewport. */
+.scene-canvas {
+  position: fixed;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+  touch-action: none;
+}
+
+:focus-visible { outline: 3px solid var(--accent); outline-offset: 3px; }
+html { scroll-padding-top: 5rem; }
+
+/* ── panel ─────────────────────────────────────────────────────────────── */
+
+.panel {
+  position: fixed;
+  top: 12px;
+  left: 12px;
+  z-index: 20;
+  width: 300px;
+  /* Caps to the window and scrolls its own overflow, so nothing grows out of
+     reach. */
+  max-height: calc(100dvh - 24px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  scrollbar-color: var(--line-2) transparent;
+  background: var(--glass), rgba(255, 255, 255, 0.32);
+  border: var(--glass-edge);
+  border-radius: var(--r-panel);
+  box-shadow: var(--glass-shadow);
+  user-select: none;
+}
+.data-well, .readout { user-select: text; }
+.data-well {
+  background: var(--well);
+  color: var(--ink);
+  border-radius: 10px;
+  padding: 12px;
+}
+.panel--right { left: auto; right: 12px; }
+.panel--bottom { top: auto; bottom: 12px; }
+
+.panel-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--line);
+}
+.panel-title { font-size: 14px; font-weight: 650; letter-spacing: -0.01em; }
+.panel-sub { font-size: 12px; color: var(--ink-3); }
+
+/* Collapsible blocks: the header is a real <button aria-expanded>. */
+.block { border-bottom: 1px solid var(--line); }
+.block:last-child { border-bottom: none; }
+.block-head {
+  width: 100%;
+  min-height: var(--tap);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 14px;
+  background: none;
+  border: none;
+  color: var(--ink-2);
+  font: 600 12px/1 var(--font);
+  cursor: pointer;
+}
+.block-head[aria-expanded="false"] + .block-body { display: none; }
+.block-body { padding: 4px 14px 12px; }
+
+/* Read-outs: label left, tabular value right. */
+.readout { display: flex; justify-content: space-between; gap: 12px; padding: 3px 0; }
+.readout-label { color: var(--ink-3); }
+.readout-value { font-weight: 650; }
+.readout-value small { color: var(--ink-3); font-weight: 500; margin-left: 2px; }
+
+/* ── controls ──────────────────────────────────────────────────────────── */
+
+.ctl {
+  min-height: var(--tap);
+  padding: 6px 12px;
+  border-radius: var(--r-pill);
+  border: 1px solid var(--line-2);
+  background: var(--glass-solid);
+  box-shadow: inset 0 1px 0 #fff, 0 1px 2px rgba(15, 79, 52, 0.06);
+  color: var(--ink);
+  font: 600 12.5px/1 var(--font);
+  cursor: pointer;
+}
+.ctl:hover { border-color: rgba(18, 121, 66, 0.35); }
+.ctl--primary {
+  color: #fff;
+  border-color: rgba(15, 79, 52, 0.6);
+  background: linear-gradient(180deg, #1f8a4c, var(--brand-green));
+}
+
+.pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 9px;
+  border-radius: var(--r-pill);
+  background: var(--fill);
+  font-size: 11.5px;
+  font-weight: 650;
+}
+.pill--ok { background: rgba(24, 138, 60, 0.12); color: var(--ok-ink); }
+.pill--warn { background: rgba(154, 104, 8, 0.14); color: var(--warn-ink); }
+.pill--err { background: rgba(210, 69, 60, 0.12); color: var(--err-ink); }
+/* "This is a simulation" — never a status colour, never mistaken for live. */
+.pill--sim {
+  background: repeating-linear-gradient(135deg, rgba(47, 111, 179, 0.1) 0 6px, rgba(47, 111, 179, 0.04) 6px 12px);
+  color: #245a94;
+  outline: 1px dashed rgba(47, 111, 179, 0.45);
+  outline-offset: -1px;
+}
+
+.dot { width: 7px; height: 7px; border-radius: 50%; display: inline-block; background: var(--ink-3); }
+.dot--ok { background: var(--ok); }
+.dot--warn { background: var(--warn); }
+.dot--err { background: var(--err); }
+
+.key {
+  display: inline-block;
+  min-width: 22px;
+  padding: 2px 6px;
+  border-radius: 6px;
+  border: 1px solid var(--line-2);
+  background: #fff;
+  font: 600 11px/1.4 var(--mono);
+  text-align: center;
+}
+
+/* Transient messages over the scene. */
+.toast {
+  position: fixed;
+  left: 50%;
+  bottom: 24px;
+  transform: translateX(-50%);
+  z-index: 30;
+  padding: 10px 16px;
+  border-radius: var(--r-pill);
+  background: var(--glass-solid);
+  border: var(--glass-edge);
+  box-shadow: var(--glass-shadow);
+  font-weight: 600;
+}
+
+/* ── embed mode ────────────────────────────────────────────────────────────
+   When the scene is framed inside an app page (?embed=1), show only a compact
+   status chip; the page around it carries the rest. */
+.is-embed .panel { width: auto; max-width: min(360px, calc(100vw - 24px)); }
+.is-embed .panel [data-full-only] { display: none; }
+
+@media (max-width: 600px) {
+  .panel { width: calc(100vw - 24px); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .panel, .ctl, .toast { transition-property: opacity, background-color, color, border-color; }
+}
+html[data-motion="reduced"] .panel,
+html[data-motion="reduced"] .ctl,
+html[data-motion="reduced"] .toast { transition-property: opacity, background-color, color, border-color; }
+html[data-effects="reduced"] .panel { background: var(--well); }
+@media (forced-colors: active) {
+  .panel, .data-well, .toast, .ctl { background: Canvas; color: CanvasText; border: 1px solid CanvasText; box-shadow: none; }
+  :focus-visible { outline-color: Highlight; }
+}

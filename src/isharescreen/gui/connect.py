@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import http.server
 import json
+import mimetypes
 import os
 import queue
 import signal
@@ -26,6 +27,7 @@ import threading
 import time
 import webbrowser
 from collections import deque
+from pathlib import Path
 from urllib.parse import parse_qs
 
 try:
@@ -49,6 +51,8 @@ _VIDEO_URL = None           # browser-frontend video page URL → the Open-video
 _GUI_PORT = 0               # this server's port, for the iss → GUI choice callback
 _CHOICE_EVENT = threading.Event()   # set when the user answers the session modal
 _CHOICE_RESULT = "share"            # "alt" | "share" — the user's last answer
+
+_STATIC_DIR = Path(__file__).with_name("static")
 
 
 def _emit(kind: str, payload) -> None:
@@ -258,8 +262,8 @@ def _launch(values: dict) -> None:
     sock_path = os.path.join(
         os.path.expanduser("~/.iss"), f"gui-{os.getpid()}-{_LAUNCH_N}.sock")
     log_path = sock_path[:-5] + ".log"   # gui-<pid>-<n>.log, next to the socket
-    cmd = [
-        sys.executable, "-m", "isharescreen.cli",
+    cmd = ([sys.executable] if getattr(sys, "frozen", False) else
+           [sys.executable, "-m", "isharescreen.cli"]) + [
         "--host", host, "-u", user, "--password-stdin",
         "--frontend", frontend, "--control-socket", sock_path,
         "--log-file", log_path,
@@ -313,6 +317,7 @@ def _launch(values: dict) -> None:
         cmd.append("--trust-cert-for-safari")
 
     env = dict(os.environ)
+    env["PYTHONIOENCODING"] = "utf-8"
     if _GUI_PORT:
         # iss POSTs here (blocking) to ask share-vs-alt when a different user is
         # at the console; the /session-choice handler answers from the modal.
@@ -321,6 +326,8 @@ def _launch(values: dict) -> None:
         cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT, env=env,
         start_new_session=True, bufsize=1, text=True,
+        encoding="utf-8", errors="replace",
+        creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
     )
     _PROC = proc
     _STATE["pid"] = proc.pid
@@ -356,222 +363,9 @@ def _launch(values: dict) -> None:
 
 
 # ── HTML ───────────────────────────────────────────────────────────────
-_HEAD = """<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<style> :root { color-scheme: dark; } * { box-sizing: border-box; }
- body { margin:0; background:#16171a; color:#e8e8ea; font:15px -apple-system,"Segoe UI",system-ui,sans-serif; } </style>"""
-
-_FORM = """<!doctype html><html><head><title>iShareScreen — Connect</title>__HEAD__
-<style>
- body { min-height:100vh; display:grid; place-items:center; }
- .card { width:360px; background:#1e1f22; border:1px solid #2c2e33; border-radius:16px; padding:28px 28px 24px; box-shadow:0 12px 40px #0008; }
- h1 { margin:0 0 2px; font-size:22px; } .sub { margin:0 0 20px; color:#9aa0a6; font-size:13px; }
- label { display:block; margin:0 0 6px; color:#c7c9cf; font-size:13px; }
- input[type=text],input[type=password],select { width:100%; margin:0 0 14px; padding:10px 12px; font-size:15px; color:#e8e8ea; background:#2b2d31; border:1px solid #3a3d42; border-radius:9px; outline:none; }
- input:focus,select:focus { border-color:#4f8cff; }
- .row { display:flex; gap:10px; align-items:center; margin:2px 0 12px; } .row input { width:auto; margin:0; }
- button { width:100%; margin-top:8px; padding:12px; font-size:15px; font-weight:600; color:#fff; background:#4f8cff; border:0; border-radius:9px; cursor:pointer; } button:hover { background:#5f97ff; }
-</style></head><body>
- <form class="card" method="post" action="/connect" onsubmit="return prepVideo()">
-  <h1>iShareScreen</h1><p class="sub">Connect to a Mac</p>
-  <label>Host</label><input type="text" name="host" placeholder="Mac hostname or IP" value="__HOST__" autofocus>
-  <label>User</label><input type="text" name="user" placeholder="macOS account" value="__USER__">
-  <label>Password</label><input type="password" name="password" placeholder="password">
-  <label>Frontend</label>
-  <select name="frontend"><option value="browser" __BROWSER_SEL__>browser (WebTransport + WebCodecs)</option><option value="desktop" __DESKTOP_SEL__>desktop (native window)</option></select>
-  <label>Resolution</label>
-  <select name="advertise" title="The encoded pixel resolution = how much bandwidth you use. Higher = sharper + more bandwidth. UI size is set separately by Display scale.">
-   <option value="auto" selected>Auto — track window size</option>
-   <option value="3840x2160">3840 × 2160 (4K UHD)</option>
-   <option value="3440x1440">3440 × 1440 (UWQHD)</option>
-   <option value="2560x1600">2560 × 1600 (WQXGA)</option>
-   <option value="2560x1440">2560 × 1440 (QHD)</option>
-   <option value="1920x1200">1920 × 1200 (WUXGA)</option>
-   <option value="1920x1080">1920 × 1080 (FHD)</option>
-   <option value="1680x1050">1680 × 1050 (WSXGA+)</option>
-   <option value="1600x900">1600 × 900 (HD+)</option>
-   <option value="1366x768">1366 × 768 (WXGA)</option>
-   <option value="1280x720">1280 × 720 (HD)</option>
-   <option value="1024x768">1024 × 768 (XGA)</option>
-   <option value="800x600">800 × 600 (SVGA)</option>
-  </select>
-  <label>Display scale</label>
-  <select name="scale" title="How large the host UI is drawn — like Windows display scaling (100%–400%). Higher = bigger text/UI. This does NOT change bandwidth; Resolution does.">
-   <option value="1.0">100% — smallest UI, most desktop space</option>
-   <option value="1.5">150%</option>
-   <option value="2.0" selected>200% — Retina (normal UI, crisp)</option>
-   <option value="2.5">250%</option>
-   <option value="3.0">300% — large UI</option>
-   <option value="3.5">350%</option>
-   <option value="4.0">400% — largest UI</option>
-  </select>
-  <label>Decoder</label>
-  <select name="decoder" title="Only decoders available on this computer are listed. 'Auto' picks the best one; the rest are for pinning a specific path when debugging.">
-   __DECODER_OPTIONS__
-  </select>
-  <div class="row"><input type="checkbox" name="audio" id="audio" checked><label for="audio" style="margin:0">Audio</label></div>
-  <div class="row"><input type="checkbox" name="curtain" id="curtain" checked><label for="curtain" style="margin:0">Curtain (private virtual display)</label></div>
-  <button type="submit">Connect</button>
- </form>
- <script>
- // Open the video tab DURING the Connect click (a real user gesture, so no
- // popup-block) — but the URL doesn't exist yet, so point it at a local
- // "Connecting…" page that polls for the real URL and redirects itself. Only
- // for the browser frontend; the desktop frontend has no video page.
- function prepVideo(){ try{ var f=document.querySelector('[name=frontend]');
-   if(f&&f.value==='browser') window.open('/video-wait','_blank'); }catch(e){} return true; }
- </script></body></html>"""
-
-_VIDEO_WAIT = """<!doctype html><html><head><meta charset="utf-8"><title>Connecting…</title>
-<style>body{background:#16171a;color:#c7c9cf;font:15px -apple-system,system-ui,sans-serif;display:flex;height:100vh;margin:0;align-items:center;justify-content:center;flex-direction:column;gap:16px}.s{width:34px;height:34px;border:3px solid #2c2e33;border-top-color:#4f8cff;border-radius:50%;animation:r .8s linear infinite}@keyframes r{to{transform:rotate(360deg)}}</style></head>
-<body><div class="s"></div><div>Connecting to the stream…</div>
-<script>(function p(){fetch('/video-url',{cache:'no-store'}).then(r=>r.json()).then(d=>{if(d&&d.url){location.replace(d.url);}else{setTimeout(p,400);}}).catch(function(){setTimeout(p,700);});})();</script>
-</body></html>"""
-
-_DASH = """<!doctype html><html><head><title>iShareScreen — Diagnostics</title>__HEAD__
-<style>
- body { display:flex; flex-direction:column; height:100vh; }
- .top { display:flex; gap:12px; align-items:center; padding:10px 16px; background:#1e1f22; border-bottom:1px solid #2c2e33; }
- .top b { font-size:15px; } .dot { width:9px; height:9px; border-radius:50%; background:#666; }
- .dot.running{background:#4ec97a;} .dot.connecting{background:#e0b341;} .dot.ended,.dot.idle{background:#e06c75;}
- .meta { color:#9aa0a6; font-size:13px; } .grow { flex:1; }
- a.new { color:#9aa0a6; text-decoration:none; font-size:13px; } a.new:hover { color:#e8e8ea; }
- .btn { background:#2b2d31; color:#e8e8ea; border:1px solid #3a3d42; border-radius:8px; padding:5px 11px; font-size:13px; cursor:pointer; }
- .btn:hover { background:#34373c; border-color:#4f8cff; }
- .kv span, .card h3, .loghdr span, [data-tip] { cursor:help; }
- /* Styled hover tooltip (native title is delayed + unstyled + width-capped, and
-    long troubleshooting text renders badly there). Shows instantly on the whole
-    row; .card/.cards have no overflow so it isn't clipped. */
- [data-tip] { position:relative; }
- [data-tip]:hover::after {
-   content:attr(data-tip); position:absolute; left:0; top:calc(100% + 5px); z-index:30;
-   width:max-content; max-width:270px; background:#0f1113; color:#dfe1e4;
-   border:1px solid #3a3d42; border-radius:8px; padding:8px 10px;
-   font-size:12px; line-height:1.45; font-weight:400; white-space:normal; text-align:left;
-   box-shadow:0 8px 22px rgba(0,0,0,.6); pointer-events:none; }
- .cards { display:grid; grid-template-columns:repeat(auto-fit,minmax(190px,1fr)); gap:12px; padding:14px 16px 4px; }
- .card { background:#1e1f22; border:1px solid #2c2e33; border-radius:12px; padding:12px 14px; }
- .card h3 { margin:0 0 8px; font-size:12px; text-transform:uppercase; letter-spacing:.05em; color:#9aa0a6; }
- .kv { display:flex; justify-content:space-between; padding:3px 0; font-size:13.5px; }
- .kv span { color:#9aa0a6; } .kv b { font-variant-numeric:tabular-nums; }
- .tiles { padding:0 16px; } .tilegrid { display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:10px; }
- .tile { background:#1e1f22; border:1px solid #2c2e33; border-radius:10px; padding:9px 11px; font-size:13px; }
- .tile .t { color:#9aa0a6; font-size:11px; } .bar { height:5px; border-radius:3px; background:#2b2d31; margin-top:6px; overflow:hidden; }
- .bar > i { display:block; height:100%; background:#4ec97a; } .bar.loss > i { background:#e06c75; }
- .logwrap { flex:1; display:flex; flex-direction:column; min-height:120px; padding:8px 16px 14px; }
- .loghdr { font-size:12px; text-transform:uppercase; letter-spacing:.05em; color:#9aa0a6; margin:6px 0; }
- #log { flex:1; margin:0; padding:10px 12px; overflow:auto; white-space:pre-wrap; word-break:break-word; background:#0f1012; border:1px solid #2c2e33; border-radius:10px; font:12px ui-monospace,SFMono-Regular,Menlo,monospace; }
- .lvl-ERROR{color:#ff7b72;} .lvl-WARN{color:#e0b341;} .lvl-DEBUG{color:#7f848e;}
- #modal { position:fixed; inset:0; background:#000a; display:none; align-items:center; justify-content:center; z-index:20; }
- #modal.show { display:flex; }
- .modalbox { width:430px; background:#1e1f22; border:1px solid #2c2e33; border-radius:14px; padding:22px 24px; box-shadow:0 16px 50px #000a; }
- .modalbox h2 { margin:0 0 8px; font-size:18px; } .modalbox p { color:#c7c9cf; font-size:14px; line-height:1.45; margin:0 0 18px; }
- .modalbtns { display:flex; gap:10px; justify-content:flex-end; }
- .btn.primary { background:#4f8cff; color:#fff; border-color:#4f8cff; } .btn.primary:hover { background:#5f97ff; }
-</style></head><body>
- <div class="top"><span class="dot idle" id="dot"></span><b>iShareScreen</b>
-  <span class="meta" id="host" title="The Mac you're connected to, the frontend in use, and the iss process ID."></span><span class="grow"></span>
-  <span class="meta" id="uptime" title="How long this session has been connected."></span><span class="meta" id="decoder" title="Active decoder + hardware path (also shown in the Stream card)."></span>
-  <button class="btn" onclick="act('fir')" title="Request a fresh keyframe (IDR) on every tile. Use when a tile is frozen, gray, or showing stale / garbled content.">Force IDR</button>
-  <button class="btn" onclick="act('reconnect')" title="Drop and re-establish the session with the same settings. Use after a stall the stream can't recover from on its own.">Reconnect</button>
-  <a id="videobtn" class="btn primary" style="display:none;text-decoration:none" target="_blank" rel="noopener" title="Open the live video stream in a new tab — in this same browser.">▶ Open video</a>
-  <a class="new" href="/new">+ new connection</a></div>
- <div class="cards">
-  <div class="card"><h3 title="What's being streamed and how it's decoded.">Stream</h3>
-   <div class="kv" data-tip="Session lifecycle: connecting → running → ended. Stuck on 'connecting' → check the host address / username / password, or a firewall blocking TCP 5900. 'ended' unexpectedly → see the log below.">
-     <span>Status</span><b id="s_status">—</b></div>
-   <div class="kv" data-tip="Host's encoded canvas size and tile count (WIDTH×HEIGHT · N tiles). The screen is split into independently-decoded tiles, so packet loss in one only corrupts that region. On the desktop frontend, resize the window to renegotiate this (dynamic resolution).">
-     <span>Canvas</span><b id="s_canvas">—</b></div>
-   <div class="kv" data-tip="Number of independently-encoded tiles (usually 4). Loss in one tile only corrupts its region, not the whole frame — a single stuck/gray tile is recoverable with Force IDR.">
-     <span>Tiles</span><b id="s_tiles">—</b></div>
-   <div class="kv" data-tip="Active decoder + hardware path. videotoolbox (Mac) / d3d11va / qsv / nvdec = GPU, low latency. 'software' = CPU decode: higher latency + CPU, lower fps — usually means the codec (e.g. HEVC 4:4:4) has no HW decoder on this machine; try --codec avc. 'n/a' on browser sessions (the browser decodes via WebCodecs).">
-     <span>Decoder</span><b id="s_dec">—</b></div></div>
-  <div class="card"><h3 title="Inbound and outbound packet activity.">Network in</h3>
-   <div class="kv" data-tip="Inbound video packet rate / bitrate. Drops to near zero on a static screen — that is NORMAL, not a stall. Sustained 0 while the screen is actively changing = a real stall: try Force IDR, then Reconnect.">
-     <span>Video</span><b id="n_vid">—</b></div>
-   <div class="kv" data-tip="Inbound system-audio stream (AAC-ELD-SBR) from the host. With audio enabled, macOS screen-share sends this continuously — ~100 pps / ~21 kbps even in silence (no silence suppression / DTX), so a constant idle rate here is NORMAL, not a leak. --no-audio turns it off at the SOURCE (the offer gates the host's audio transmitter below its tier floor): the rate drops to ~0.4 kbps (2 pps residual), not just muting local playback.">
-     <span>Audio</span><b id="n_audio">—</b></div>
-   <div class="kv" data-tip="Inbound RTCP feedback (sender reports) from the host — a few pps, muxed on the audio socket. Near-zero is fine.">
-     <span>RTCP</span><b id="n_rtcp">—</b></div>
-   <div class="kv" data-tip="RFB control packets over TCP: cursor shape, clipboard sync, and input acknowledgements. Low and bursty.">
-     <span>TCP</span><b id="n_tcp">—</b></div>
-   <div class="kv" data-tip="Packets iss sends back (NACKs / RTCP / input). Staying at 0 usually means a one-way network path or a firewall blocking the return — input and loss-recovery won't work. Check that outbound UDP to the host isn't blocked.">
-     <span>Uplink</span><b id="n_tx">—</b></div></div>
-  <div class="card"><h3 title="Packet loss and stream-health signals.">Loss &amp; health</h3>
-   <div class="kv" data-tip="RTP packets detected lost (sequence-number gaps). A few is fine; climbing steadily on an active screen = a lossy link (Wi-Fi interference, congestion). If it's paired with UDP-queue drops, raise the OS receive buffer (net.core.rmem_max on Linux).">
-     <span>Loss total</span><b id="h_loss">—</b></div>
-   <div class="kv" data-tip="Lost packets on SSRCs not mapped to a tile. Non-zero during a gray-out means the host is publishing extra SSRC groups iss isn't tracking yet — usually self-heals within a second or two.">
-     <span>Unmapped</span><b id="h_unmap">—</b></div>
-   <div class="kv" data-tip="Time since the host last delivered a frame. Large while the screen is idle is NORMAL. Large while the screen is actively changing = a stall — Force IDR, or Reconnect if it persists. (An idle remote whose display has slept also looks like this — move the mouse.)">
-     <span>Last publish</span><b id="h_pub">—</b></div>
-   <div class="kv" data-tip="Number of RTP SSRC groups (quality tiers) the host is streaming — typically 1–3. Rapid churn here during gray-outs means the host is re-grouping streams mid-session.">
-     <span>SSRC groups</span><b id="h_ssrc">—</b></div></div>
-  <div class="card"><h3 title="Internal buffers — growth here means iss can't keep up.">Queues</h3>
-   <div class="kv" data-tip="Video receive-queue depth / capacity + drop count. Depth should sit near 0; sustained drops mean iss can't drain UDP fast enough — raise the OS receive buffer (net.core.rmem_max on Linux, to ~33 MB).">
-     <span>UDP video</span><b id="q_vid">—</b></div>
-   <div class="kv" data-tip="Audio/RTCP receive-queue depth / capacity + drops. Same remedy as UDP video if it drops.">
-     <span>UDP ctrl</span><b id="q_ctrl">—</b></div>
-   <div class="kv" data-tip="Frames waiting to be decoded. Growing = the decoder can't keep up (common with software decode — switch to a HW decoder or lower the resolution). 'n/a' on browser sessions.">
-     <span>Decode q</span><b id="q_dec">—</b></div>
-   <div class="kv" data-tip="Time from a complete frame arriving to it being decoded. Sub-millisecond on a GPU decoder; high or growing = a decode bottleneck (software decode, or an overloaded GPU).">
-     <span>Decode lat</span><b id="q_lat">—</b></div></div>
- </div>
- <div class="tiles"><div class="tilegrid" id="tiles"></div></div>
- <div class="logwrap"><div class="loghdr">Log <span class="meta">— drag to select &amp; copy</span></div><pre id="log"></pre></div>
- <div id="modal"><div class="modalbox">
-   <h2>Another user is at the console</h2>
-   <p><span id="modaluser">Someone is signed in at this Mac.</span> Share their existing session, or sign in as your own user on a separate display (alt-session)?</p>
-   <div class="modalbtns"><button class="btn" onclick="choose('share')">Share their session</button><button class="btn primary" onclick="choose('alt')">Sign in separately</button></div>
- </div></div>
-<script>
- const $ = id => document.getElementById(id);
- function act(a){ fetch('/action',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'action='+a}); }
- function choose(c){ fetch('/action',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'action=session_choice&choice='+c}); document.getElementById('modal').classList.remove('show'); }
- const set = (id,v) => { const e=$(id); if(e) e.textContent = (v==null||v==='')?'—':v; };
- const upt = s => { s=Math.floor(s||0); const h=Math.floor(s/3600),m=Math.floor(s%3600/60),x=s%60; return (h?h+'h ':'')+(h||m?m+'m ':'')+x+'s'; };
- const qf = q => q ? `${q.depth}/${q.cap}` + (q.drop?` ⓧ${q.drop}`:'') : '—';
- function tiles(ts){
-   const host=$('tiles'); if(!ts||!ts.length){ host.innerHTML=''; return; }
-   const maxf = Math.max(1, ...ts.map(t=>t.fps||0));
-   host.innerHTML = ts.map((t,i)=>{
-     const fps=t.fps||0, loss=t.loss_s||0;
-     return `<div class="tile"><div class="t">tile ${i}</div><div>${fps.toFixed(1)} fps`+
-            (loss?` · <span style="color:#e06c75">${loss} lost</span>`:'')+`</div>`+
-            `<div class="bar"><i style="width:${Math.min(100,fps/maxf*100)}%"></i></div></div>`;
-   }).join('');
- }
- const es = new EventSource('/events');
- es.addEventListener('status', e => { const s=JSON.parse(e.data);
-   $('dot').className='dot '+(s.status||'idle'); set('s_status', s.status);
-   set('host', (s.host||'') + (s.frontend?' · '+s.frontend:'') + (s.pid?'  (pid '+s.pid+')':'')); });
- es.addEventListener('hello', e => { const h=JSON.parse(e.data);
-   if(h.canvas) set('s_canvas', h.canvas.w+'×'+h.canvas.h + (h.canvas.tiles?'  ·  '+h.canvas.tiles+' tiles':''));
-   if(h.decoder){ set('decoder', h.decoder); set('s_dec', h.decoder); } });
- es.addEventListener('snapshot', e => { const d=JSON.parse(e.data), rx=d.rx||{}, uq=d.udp_q||{};
-   const pub = d.last_publish_age_s;
-   set('uptime', upt(d.uptime_s));
-   set('decoder', d.decoder); set('s_dec', d.decoder);
-   set('s_tiles', (d.tiles||[]).length);
-   set('n_vid', `${rx.video_pps||0} pps · ${rx.video_mbps||0} Mbps`);
-   set('n_audio', `${rx.audio_pps||0} pps · ${rx.audio_kbps||0} kbps`);
-   set('n_rtcp', `${rx.rtcp_pps||0} pps · ${rx.rtcp_kbps||0} kbps`);
-   set('n_tcp', `${rx.tcp_pps||0} pps`); set('n_tx', `${(d.tx||{}).pps||0} pps`);
-   set('h_loss', d.loss_total); set('h_unmap', d.loss_unmapped);
-   set('h_pub', (pub!=null && pub>=0) ? pub+'s ago' : '—'); set('h_ssrc', d.ssrc_groups);
-   set('q_vid', qf(uq.video)); set('q_ctrl', qf(uq.ctrl));
-   set('q_dec', qf(d.decode_q));
-   set('q_lat', d.decode_latency_ms!=null?d.decode_latency_ms+' ms':'—');
-   tiles(d.tiles); });
- const logEl=$('log');
- es.addEventListener('log', e => { const line=JSON.parse(e.data);
-   const atBottom = logEl.scrollHeight-logEl.scrollTop-logEl.clientHeight < 40;
-   const lvl = line.includes(' ERROR ')?'lvl-ERROR':line.includes(' WARNING ')?'lvl-WARN':line.includes(' DEBUG ')?'lvl-DEBUG':'';
-   const s=document.createElement('span'); s.className=lvl; s.textContent=line+'\\n'; logEl.appendChild(s);
-   if(atBottom) logEl.scrollTop=logEl.scrollHeight; });
- es.addEventListener('video_url', e => { try{ const u=(JSON.parse(e.data)||{}).url; const b=document.getElementById('videobtn'); if(u&&b){ b.href=u; b.style.display=''; } }catch(_){} });
- es.addEventListener('session_choice', e => { let u=''; try{ u=(JSON.parse(e.data)||{}).console_user||''; }catch(_){}
-   document.getElementById('modaluser').textContent = u ? (u+' is signed in at this Mac.') : 'Someone is signed in at this Mac.';
-   document.getElementById('modal').classList.add('show'); });
-</script></body></html>"""
+_HEAD = (_STATIC_DIR / "head.html").read_text(encoding="utf-8")
+_VIDEO_WAIT = (_STATIC_DIR / "waiting.html").read_text(encoding="utf-8").replace("__HEAD__", _HEAD)
+_DASH = (_STATIC_DIR / "dashboard.html").read_text(encoding="utf-8")
 
 
 # Friendly labels for the registry's decoder specs. The dropdown only lists
@@ -663,7 +457,7 @@ def _form_page() -> bytes:
             user = getattr(last, "user", "") or ""
             frontend = getattr(last, "frontend", "browser") or "browser"
     import html as _html
-    return (_FORM
+    return ((_STATIC_DIR / "connect.html").read_text(encoding="utf-8")
             .replace("__HEAD__", _HEAD)
             .replace("__HOST__", _html.escape(host, quote=True))
             .replace("__USER__", _html.escape(user, quote=True))
@@ -697,6 +491,18 @@ class _Handler(http.server.BaseHTTPRequestHandler):
     def do_GET(self) -> None:  # noqa: N802
         if not self._local_request():
             self._html(b"forbidden", 403); return
+        if self.path.startswith("/static/"):
+            target = (_STATIC_DIR / self.path[8:].split("?", 1)[0]).resolve()
+            if not target.is_relative_to(_STATIC_DIR.resolve()) or not target.is_file():
+                self._html(b"not found", 404); return
+            body = target.read_bytes()
+            self.send_response(200)
+            self.send_header("Content-Type", mimetypes.guess_type(str(target))[0] or "application/octet-stream")
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.end_headers()
+            self.wfile.write(body)
+            return
         if self.path in ("/", "/index.html"):
             self._html(_form_page() if _STATE["status"] == "idle" else _dash_page())
         elif self.path == "/new":
@@ -715,6 +521,10 @@ class _Handler(http.server.BaseHTTPRequestHandler):
     def do_POST(self) -> None:  # noqa: N802
         if not self._local_request():
             self._html(b"forbidden", 403); return
+        if self.path == "/quit":
+            self._html(b"closed")
+            threading.Thread(target=self.server.shutdown, daemon=True).start()
+            return
         length = int(self.headers.get("Content-Length", 0))
         raw = self.rfile.read(length).decode("utf-8") if length else ""
         values = {k: v[0] for k, v in parse_qs(raw).items()}
@@ -724,6 +534,10 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                 _send_command({"action": "fir"})
             elif action == "reconnect":
                 threading.Thread(target=_reconnect, daemon=True).start()
+            elif action == "disconnect":
+                _kill_current()
+                _STATE["status"] = "ended"
+                _emit("status", dict(_STATE))
             elif action == "session_choice":
                 _set_session_choice(values.get("choice", "share"))
             self._html(b"ok")
@@ -798,12 +612,16 @@ def main() -> int:
     server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _Handler)
     _GUI_PORT = server.server_address[1]
     url = f"http://127.0.0.1:{_GUI_PORT}/"
-    print(f"iShareScreen → {url}")
-    webbrowser.open(url)
+    print(f"iShareScreen → {url}", flush=True)
+    if os.environ.get("ISS_NO_BROWSER") != "1":
+        webbrowser.open(url)
     try:
         server.serve_forever()
     except KeyboardInterrupt:
         pass
+    finally:
+        _kill_current()
+        server.server_close()
     return 0
 
 

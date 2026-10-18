@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en" class="lg-motion">
+  <head>
+    <title>Connecting · iShareScreen</title>
+    __HEAD__
+  </head>
+  <body class="waiting">
+    <main class="waiting-panel glass" data-lg-reveal>
+      <div class="spinner" aria-hidden="true"></div>
+      <h1>Bringing your Mac closer.</h1>
+      <p id="wait-state" role="status">
+        Establishing your screen sharing session. This window will open your
+        desktop when it’s ready.
+      </p>
+      <a class="btn btn-glass" href="/dashboard" target="_blank" rel="noopener"
+        >View connection activity ↗</a
+      >
+    </main>
+    <script>
+      let attempts = 0;
+      (function poll() {
+        fetch("/video-url", { cache: "no-store" })
+          .then((r) => r.json())
+          .then((d) => {
+            if (d && d.url) {
+              location.replace(d.url);
+            } else {
+              if (++attempts > 75)
+                document.getElementById("wait-state").textContent =
+                  "Still waiting for your Mac. Check connection activity for an account prompt or connection error.";
+              setTimeout(poll, 400);
+            }
+          })
+          .catch(() => setTimeout(poll, 1000));
+      })();
+    </script>
+  </body>
+</html>

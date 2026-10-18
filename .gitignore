@@ -19,3 +19,6 @@ tools/*
 
 # Local agent / editor session scratch
 .claude/
+.design-reference/
+.vnc-reference/
+.pytest_cache/

@@ -55,6 +55,11 @@ def _state_dir() -> Path:
     return Path.home() / ".iss"
 
 
+def state_dir() -> Path:
+    """Public accessor for the per-user state directory."""
+    return _state_dir()
+
+
 def _last_path() -> Path:
     return _state_dir() / "last.json"
 

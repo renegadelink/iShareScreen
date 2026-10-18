@@ -1,0 +1,409 @@
+<!doctype html>
+<html lang="en" class="lg-motion">
+  <head>
+    <title>iShareScreen — Diagnostics</title>
+    __HEAD__
+  </head>
+  <body>
+    <header class="app-header glass">
+      <a class="brand" href="/new" data-lg-transition
+        ><span class="brand-icon">↗</span>iShareScreen<span class="brand-tag"
+          >Your session workspace</span
+        ></a
+      ><button
+        class="btn btn-glass effects-toggle"
+        type="button"
+        aria-pressed="false"
+      >
+        Reduce effects
+      </button>
+    </header>
+    <main class="dashboard">
+      <div class="page-head">
+        <div>
+          <p class="eyebrow">WORKSPACE / SESSION</p>
+          <h1>Your Mac, in view.</h1>
+          <p>Connection activity and the controls to keep things flowing.</p>
+        </div>
+        <span class="badge">Session diagnostics</span>
+      </div>
+      <div class="session-notice" id="session-notice" role="status">
+        Connecting to your Mac. Waiting for session updates…
+      </div>
+      <div class="top">
+        <span class="dot idle" id="dot"></span><b>iShareScreen</b>
+        <span
+          class="meta"
+          id="host"
+          title="The Mac you're connected to, the frontend in use, and the iss process ID."
+        ></span
+        ><span class="grow"></span>
+        <span
+          class="meta"
+          id="uptime"
+          title="How long this session has been connected."
+        ></span
+        ><span
+          class="meta"
+          id="decoder"
+          title="Active decoder + hardware path (also shown in the Stream card)."
+        ></span>
+        <button
+          class="btn btn-glass"
+          onclick="act('fir')"
+          title="Request a fresh keyframe (IDR) on every tile. Use when a tile is frozen, gray, or showing stale / garbled content."
+        >
+          Refresh screen
+        </button>
+        <button
+          class="btn btn-glass"
+          onclick="act('reconnect')"
+          title="Drop and re-establish the session with the same settings. Use after a stall the stream can't recover from on its own."
+        >
+          Reconnect
+        </button>
+        <button class="btn btn-glass" onclick="act('disconnect')">
+          Disconnect
+        </button>
+        <a
+          id="videobtn"
+          class="btn btn-glass primary"
+          style="display: none; text-decoration: none"
+          target="_blank"
+          rel="noopener"
+          title="Open the live video stream in a new tab — in this same browser."
+          >Open screen ↗</a
+        >
+        <a class="new" href="/new" data-lg-transition>New connection ↗</a>
+      </div>
+      <div class="cards">
+        <div class="card">
+          <h3 title="What's being streamed and how it's decoded.">Stream</h3>
+          <div
+            class="kv"
+            data-tip="Session lifecycle: connecting → running → ended. Stuck on 'connecting' → check the host address / username / password, or a firewall blocking TCP 5900. 'ended' unexpectedly → see the log below."
+          >
+            <span>Status</span><b id="s_status">—</b>
+          </div>
+          <div
+            class="kv"
+            data-tip="Host's encoded canvas size and tile count (WIDTH×HEIGHT · N tiles). The screen is split into independently-decoded tiles, so packet loss in one only corrupts that region. On the desktop frontend, resize the window to renegotiate this (dynamic resolution)."
+          >
+            <span>Canvas</span><b id="s_canvas">—</b>
+          </div>
+          <div
+            class="kv"
+            data-tip="Number of independently-encoded tiles (usually 4). Loss in one tile only corrupts its region, not the whole frame — a single stuck/gray tile is recoverable with Force IDR."
+          >
+            <span>Tiles</span><b id="s_tiles">—</b>
+          </div>
+          <div
+            class="kv"
+            data-tip="Active decoder + hardware path. videotoolbox (Mac) / d3d11va / qsv / nvdec = GPU, low latency. 'software' = CPU decode: higher latency + CPU, lower fps — usually means the codec (e.g. HEVC 4:4:4) has no HW decoder on this machine; try --codec avc. 'n/a' on browser sessions (the browser decodes via WebCodecs)."
+          >
+            <span>Decoder</span><b id="s_dec">—</b>
+          </div>
+        </div>
+        <div class="card">
+          <h3 title="Inbound and outbound packet activity.">Network in</h3>
+          <div
+            class="kv"
+            data-tip="Inbound video packet rate / bitrate. Drops to near zero on a static screen — that is NORMAL, not a stall. Sustained 0 while the screen is actively changing = a real stall: try Force IDR, then Reconnect."
+          >
+            <span>Video</span><b id="n_vid">—</b>
+          </div>
+          <div
+            class="kv"
+            data-tip="Inbound system-audio stream (AAC-ELD-SBR) from the host. With audio enabled, macOS screen-share sends this continuously — ~100 pps / ~21 kbps even in silence (no silence suppression / DTX), so a constant idle rate here is NORMAL, not a leak. --no-audio turns it off at the SOURCE (the offer gates the host's audio transmitter below its tier floor): the rate drops to ~0.4 kbps (2 pps residual), not just muting local playback."
+          >
+            <span>Audio</span><b id="n_audio">—</b>
+          </div>
+          <div
+            class="kv"
+            data-tip="Inbound RTCP feedback (sender reports) from the host — a few pps, muxed on the audio socket. Near-zero is fine."
+          >
+            <span>RTCP</span><b id="n_rtcp">—</b>
+          </div>
+          <div
+            class="kv"
+            data-tip="RFB control packets over TCP: cursor shape, clipboard sync, and input acknowledgements. Low and bursty."
+          >
+            <span>TCP</span><b id="n_tcp">—</b>
+          </div>
+          <div
+            class="kv"
+            data-tip="Packets iss sends back (NACKs / RTCP / input). Staying at 0 usually means a one-way network path or a firewall blocking the return — input and loss-recovery won't work. Check that outbound UDP to the host isn't blocked."
+          >
+            <span>Uplink</span><b id="n_tx">—</b>
+          </div>
+        </div>
+        <div class="card">
+          <h3 title="Packet loss and stream-health signals.">
+            Loss &amp; health
+          </h3>
+          <div
+            class="kv"
+            data-tip="RTP packets detected lost (sequence-number gaps). A few is fine; climbing steadily on an active screen = a lossy link (Wi-Fi interference, congestion). If it's paired with UDP-queue drops, raise the OS receive buffer (net.core.rmem_max on Linux)."
+          >
+            <span>Loss total</span><b id="h_loss">—</b>
+          </div>
+          <div
+            class="kv"
+            data-tip="Lost packets on SSRCs not mapped to a tile. Non-zero during a gray-out means the host is publishing extra SSRC groups iss isn't tracking yet — usually self-heals within a second or two."
+          >
+            <span>Unmapped</span><b id="h_unmap">—</b>
+          </div>
+          <div
+            class="kv"
+            data-tip="Time since the host last delivered a frame. Large while the screen is idle is NORMAL. Large while the screen is actively changing = a stall — Force IDR, or Reconnect if it persists. (An idle remote whose display has slept also looks like this — move the mouse.)"
+          >
+            <span>Last publish</span><b id="h_pub">—</b>
+          </div>
+          <div
+            class="kv"
+            data-tip="Number of RTP SSRC groups (quality tiers) the host is streaming — typically 1–3. Rapid churn here during gray-outs means the host is re-grouping streams mid-session."
+          >
+            <span>SSRC groups</span><b id="h_ssrc">—</b>
+          </div>
+        </div>
+        <div class="card">
+          <h3 title="Internal buffers — growth here means iss can't keep up.">
+            Queues
+          </h3>
+          <div
+            class="kv"
+            data-tip="Video receive-queue depth / capacity + drop count. Depth should sit near 0; sustained drops mean iss can't drain UDP fast enough — raise the OS receive buffer (net.core.rmem_max on Linux, to ~33 MB)."
+          >
+            <span>UDP video</span><b id="q_vid">—</b>
+          </div>
+          <div
+            class="kv"
+            data-tip="Audio/RTCP receive-queue depth / capacity + drops. Same remedy as UDP video if it drops."
+          >
+            <span>UDP ctrl</span><b id="q_ctrl">—</b>
+          </div>
+          <div
+            class="kv"
+            data-tip="Frames waiting to be decoded. Growing = the decoder can't keep up (common with software decode — switch to a HW decoder or lower the resolution). 'n/a' on browser sessions."
+          >
+            <span>Decode q</span><b id="q_dec">—</b>
+          </div>
+          <div
+            class="kv"
+            data-tip="Time from a complete frame arriving to it being decoded. Sub-millisecond on a GPU decoder; high or growing = a decode bottleneck (software decode, or an overloaded GPU)."
+          >
+            <span>Decode lat</span><b id="q_lat">—</b>
+          </div>
+        </div>
+      </div>
+      <div class="tiles">
+        <div class="tilegrid" id="tiles">
+          <p class="empty-tiles">
+            Tile activity appears when the stream begins.
+          </p>
+        </div>
+      </div>
+      <div class="logwrap">
+        <div class="loghdr">
+          Log <span class="meta">— drag to select &amp; copy</span>
+        </div>
+        <pre id="log"></pre>
+      </div>
+      <div
+        id="modal"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="modal-title"
+      >
+        <div class="modalbox">
+          <h2 id="modal-title">Someone’s already at this Mac</h2>
+          <p>
+            <span id="modaluser">Someone is signed in at this Mac.</span> Share
+            their existing session, or sign in as your own user on a separate
+            display (alt-session)?
+          </p>
+          <div class="modalbtns">
+            <button class="btn btn-glass" onclick="choose('share')">
+              Share their session</button
+            ><button class="btn btn-glass primary" onclick="choose('alt')">
+              Sign in separately
+            </button>
+          </div>
+        </div>
+      </div>
+    </main>
+    <script>
+      document.getElementById("modal").addEventListener("keydown", (e) => {
+        if (e.key === "Tab") {
+          const bs = [...document.querySelectorAll("#modal button")];
+          if (e.shiftKey && document.activeElement === bs[0]) {
+            e.preventDefault();
+            bs.at(-1).focus();
+          } else if (!e.shiftKey && document.activeElement === bs.at(-1)) {
+            e.preventDefault();
+            bs[0].focus();
+          }
+        }
+      });
+      const $ = (id) => document.getElementById(id);
+      function act(a) {
+        fetch("/action", {
+          method: "POST",
+          headers: { "Content-Type": "application/x-www-form-urlencoded" },
+          body: "action=" + a,
+        });
+      }
+      function choose(c) {
+        fetch("/action", {
+          method: "POST",
+          headers: { "Content-Type": "application/x-www-form-urlencoded" },
+          body: "action=session_choice&choice=" + c,
+        });
+        document.getElementById("modal").classList.remove("show");
+        document.querySelector(".top button").focus();
+      }
+      const set = (id, v) => {
+        const e = $(id);
+        if (e) e.textContent = v == null || v === "" ? "—" : v;
+      };
+      const upt = (s) => {
+        s = Math.floor(s || 0);
+        const h = Math.floor(s / 3600),
+          m = Math.floor((s % 3600) / 60),
+          x = s % 60;
+        return (h ? h + "h " : "") + (h || m ? m + "m " : "") + x + "s";
+      };
+      const qf = (q) =>
+        q ? `${q.depth}/${q.cap}` + (q.drop ? ` ⓧ${q.drop}` : "") : "—";
+      function tiles(ts) {
+        const host = $("tiles");
+        if (!ts || !ts.length) {
+          host.innerHTML =
+            '<p class="empty-tiles">Waiting for tile activity from your Mac.</p>';
+          return;
+        }
+        const maxf = Math.max(1, ...ts.map((t) => t.fps || 0));
+        host.innerHTML = ts
+          .map((t, i) => {
+            const fps = t.fps || 0,
+              loss = t.loss_s || 0;
+            return (
+              `<div class="tile"><div class="t">tile ${i}</div><div>${fps.toFixed(1)} fps` +
+              (loss
+                ? ` · <span style="color:#e06c75">${loss} lost</span>`
+                : "") +
+              `</div>` +
+              `<div class="bar"><i style="width:${Math.min(100, (fps / maxf) * 100)}%"></i></div></div>`
+            );
+          })
+          .join("");
+      }
+      const es = new EventSource("/events");
+      es.addEventListener("status", (e) => {
+        const s = JSON.parse(e.data);
+        $("dot").className = "dot " + (s.status || "idle");
+        set("s_status", s.status);
+        set(
+          "session-notice",
+          s.status === "running"
+            ? "Session process is running. Open video to view your Mac."
+            : s.status === "connecting"
+              ? "Connecting to your Mac. Waiting for session updates…"
+              : "Session ended. Check activity, reconnect, or start a new connection.",
+        );
+        set(
+          "host",
+          (s.host || "") +
+            (s.frontend ? " · " + s.frontend : "") +
+            (s.pid ? "  (pid " + s.pid + ")" : ""),
+        );
+      });
+      es.onerror = () =>
+        set(
+          "session-notice",
+          "Connection to the workspace was interrupted. Trying to reconnect…",
+        );
+      es.addEventListener("hello", (e) => {
+        const h = JSON.parse(e.data);
+        if (h.canvas)
+          set(
+            "s_canvas",
+            h.canvas.w +
+              "×" +
+              h.canvas.h +
+              (h.canvas.tiles ? "  ·  " + h.canvas.tiles + " tiles" : ""),
+          );
+        if (h.decoder) {
+          set("decoder", h.decoder);
+          set("s_dec", h.decoder);
+        }
+      });
+      es.addEventListener("snapshot", (e) => {
+        const d = JSON.parse(e.data),
+          rx = d.rx || {},
+          uq = d.udp_q || {};
+        const pub = d.last_publish_age_s;
+        set("uptime", upt(d.uptime_s));
+        set("decoder", d.decoder);
+        set("s_dec", d.decoder);
+        set("s_tiles", (d.tiles || []).length);
+        set("n_vid", `${rx.video_pps || 0} pps · ${rx.video_mbps || 0} Mbps`);
+        set("n_audio", `${rx.audio_pps || 0} pps · ${rx.audio_kbps || 0} kbps`);
+        set("n_rtcp", `${rx.rtcp_pps || 0} pps · ${rx.rtcp_kbps || 0} kbps`);
+        set("n_tcp", `${rx.tcp_pps || 0} pps`);
+        set("n_tx", `${(d.tx || {}).pps || 0} pps`);
+        set("h_loss", d.loss_total);
+        set("h_unmap", d.loss_unmapped);
+        set("h_pub", pub != null && pub >= 0 ? pub + "s ago" : "—");
+        set("h_ssrc", d.ssrc_groups);
+        set("q_vid", qf(uq.video));
+        set("q_ctrl", qf(uq.ctrl));
+        set("q_dec", qf(d.decode_q));
+        set(
+          "q_lat",
+          d.decode_latency_ms != null ? d.decode_latency_ms + " ms" : "—",
+        );
+        tiles(d.tiles);
+      });
+      const logEl = $("log");
+      es.addEventListener("log", (e) => {
+        const line = JSON.parse(e.data);
+        const atBottom =
+          logEl.scrollHeight - logEl.scrollTop - logEl.clientHeight < 40;
+        const lvl = line.includes(" ERROR ")
+          ? "lvl-ERROR"
+          : line.includes(" WARNING ")
+            ? "lvl-WARN"
+            : line.includes(" DEBUG ")
+              ? "lvl-DEBUG"
+              : "";
+        const s = document.createElement("span");
+        s.className = lvl;
+        s.textContent = line + "\n";
+        logEl.appendChild(s);
+        if (atBottom) logEl.scrollTop = logEl.scrollHeight;
+      });
+      es.addEventListener("video_url", (e) => {
+        try {
+          const u = (JSON.parse(e.data) || {}).url;
+          const b = document.getElementById("videobtn");
+          if (u && b) {
+            b.href = u;
+            b.style.display = "";
+          }
+        } catch (_) {}
+      });
+      es.addEventListener("session_choice", (e) => {
+        let u = "";
+        try {
+          u = (JSON.parse(e.data) || {}).console_user || "";
+        } catch (_) {}
+        document.getElementById("modaluser").textContent = u
+          ? u + " is signed in at this Mac."
+          : "Someone is signed in at this Mac.";
+        document.getElementById("modal").classList.add("show");
+        document.querySelector("#modal button").focus();
+      });
+    </script>
+  </body>
+</html>

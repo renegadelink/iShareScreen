@@ -10,4 +10,4 @@ Layout (no symbols re-exported here — import directly from the modules):
     isharescreen.frontend.connect_prompt    launch-time terminal prompt
     isharescreen.frontend.desktop.*         native wgpu + glfw viewer
 """
-__version__ = "0.1.0"
+__version__ = "0.2.0"

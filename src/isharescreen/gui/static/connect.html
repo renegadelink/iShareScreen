@@ -1,0 +1,269 @@
+<!doctype html>
+<html lang="en" class="lg-motion">
+  <head>
+    <title>Connect · iShareScreen</title>
+    __HEAD__
+  </head>
+  <body class="connect-page has-scene">
+    <a class="skip-link" href="#connection">Skip to connection</a>
+    <div
+      class="lg-scene"
+      data-lg-scene="signin"
+      data-lg-scene-mode="background"
+      aria-hidden="true"
+    ></div>
+    <header class="app-header glass">
+      <a class="brand" href="/" aria-label="iShareScreen home"
+        ><span class="brand-icon"
+          ><svg
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.6"
+          >
+            <rect x="3" y="4" width="18" height="13" rx="3" />
+            <path d="M8 21h8m-4-4v4m-5-11 3-3m4 7 3-3" /></svg></span
+        >iShareScreen<span class="brand-tag">Remote, beautifully.</span></a
+      >
+      <div class="header-right">
+        <span class="local-badge"><i></i> Local workspace</span
+        ><button
+          class="btn btn-glass effects-toggle"
+          type="button"
+          aria-pressed="false"
+        >
+          Reduce effects</button
+        ><button class="btn btn-glass quit-app" type="button">Quit app</button>
+      </div>
+    </header>
+    <main class="connect-layout" id="connection">
+      <section class="intro" data-lg-reveal>
+        <p class="eyebrow">YOUR MAC. WHEREVER YOU ARE.</p>
+        <h1>A little closer <br />to your <span>desktop.</span></h1>
+        <p class="intro-copy">
+          Bring your Mac to the screen in front of you. A clear picture,
+          familiar controls, and room to do your best work.
+        </p>
+        <div class="desktop-art" aria-hidden="true">
+          <div class="art-window glass">
+            <div class="art-toolbar">
+              <span></span><span></span><span></span
+              ><small>Your workspace, connected</small>
+            </div>
+            <div class="art-screen">
+              <div class="art-orb"></div>
+              <div class="art-pane">
+                <span class="art-folder"></span><i></i><i></i><i></i>
+              </div>
+              <div class="art-dock"><i></i><i></i><i></i><i></i><i></i></div>
+            </div>
+          </div>
+          <div class="art-caption glass">
+            <span class="connection-glyph">↗</span>
+            <div>
+              <strong>Made for a seamless connection</strong
+              ><small>Screen, sound, and everything in between.</small>
+            </div>
+          </div>
+        </div>
+        <div class="feature-row">
+          <span
+            ><svg viewBox="0 0 24 24">
+              <path d="m13 2-9 12h7l-1 8 10-12h-7z" /></svg
+            >High performance</span
+          ><span
+            ><svg viewBox="0 0 24 24">
+              <rect x="5" y="10" width="14" height="11" rx="3" />
+              <path d="M8 10V7a4 4 0 0 1 8 0v3" /></svg
+            >Encrypted stream</span
+          >
+        </div>
+      </section>
+      <section class="connection-shell glass" data-lg-reveal>
+        <form
+          class="connection-form"
+          method="post"
+          action="/connect"
+          onsubmit="return prepVideo();"
+        >
+          <div class="form-heading">
+            <span class="section-number">01 / CONNECT</span
+            ><span class="badge">macOS host</span>
+          </div>
+          <h2>Make yourself at home.</h2>
+          <p class="form-sub">Connect with your Mac’s address and account.</p>
+          <div class="field">
+            <label for="host"
+              >Mac address <span>Hostname or IP address</span></label
+            ><input
+              id="host"
+              type="text"
+              name="host"
+              placeholder="studio-mac.local"
+              value="__HOST__"
+              required
+              autocomplete="off"
+              autocapitalize="none"
+              spellcheck="false"
+              aria-describedby="host-help"
+            /><small id="host-help"
+              >On your Mac, enable Screen Sharing in System Settings → General →
+              Sharing.</small
+            >
+          </div>
+          <div class="field">
+            <label for="user">Username</label
+            ><input
+              id="user"
+              type="text"
+              name="user"
+              placeholder="Your macOS username"
+              value="__USER__"
+              required
+              autocomplete="username"
+              autocapitalize="none"
+              spellcheck="false"
+            />
+          </div>
+          <div class="field">
+            <label for="password">Password</label>
+            <div class="password-field">
+              <input
+                id="password"
+                type="password"
+                name="password"
+                placeholder="Your macOS password"
+                required
+                autocomplete="current-password"
+              /><button
+                type="button"
+                class="password-toggle"
+                aria-label="Show password"
+                aria-pressed="false"
+              >
+                <svg
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="1.6"
+                >
+                  <path d="M2 12s4-7 10-7 10 7 10 7-4 7-10 7S2 12 2 12Z" />
+                  <circle cx="12" cy="12" r="3" />
+                </svg>
+              </button>
+            </div>
+          </div>
+          <details class="display-options">
+            <summary>
+              <span>Display &amp; experience</span
+              ><span class="summary-meta">Customize <b>+</b></span>
+            </summary>
+            <div class="options-content">
+              <div class="field">
+                <label for="frontend">Open screen in</label
+                ><select id="frontend" name="frontend">
+                  <option value="browser" __BROWSER_SEL__>Browser</option>
+                  <option value="desktop" __DESKTOP_SEL__>
+                    Native desktop window
+                  </option>
+                </select>
+              </div>
+              <div class="option-grid">
+                <div class="field">
+                  <label for="advertise">Resolution</label
+                  ><select id="advertise" name="advertise">
+                    <option value="auto">Auto · fit window</option>
+                    <option value="3840x2160">3840 × 2160 · 4K</option>
+                    <option value="3440x1440">3440 × 1440 · Ultrawide</option>
+                    <option value="2560x1600">2560 × 1600</option>
+                    <option value="2560x1440">2560 × 1440 · QHD</option>
+                    <option value="1920x1200">1920 × 1200</option>
+                    <option value="1920x1080">1920 × 1080 · Full HD</option>
+                    <option value="1680x1050">1680 × 1050</option>
+                    <option value="1600x900">1600 × 900</option>
+                    <option value="1366x768">1366 × 768</option>
+                    <option value="1280x720">1280 × 720 · HD</option>
+                    <option value="1024x768">1024 × 768</option>
+                    <option value="800x600">800 × 600</option>
+                  </select>
+                </div>
+                <div class="field">
+                  <label for="scale">Display scale</label
+                  ><select id="scale" name="scale">
+                    <option value="1.0">100%</option>
+                    <option value="1.5">150%</option>
+                    <option value="2.0" selected>200% · Retina</option>
+                    <option value="2.5">250%</option>
+                    <option value="3.0">300%</option>
+                    <option value="3.5">350%</option>
+                    <option value="4.0">400%</option>
+                  </select>
+                </div>
+              </div>
+              <p class="field-note">
+                Higher resolution uses more bandwidth. Display scale adjusts the
+                size of text and controls.
+              </p>
+              <div class="field">
+                <label for="decoder">Video decoder</label
+                ><select id="decoder" name="decoder">
+                  __DECODER_OPTIONS__
+                </select>
+              </div>
+            </div>
+          </details>
+          <div class="toggle-list">
+            <label class="toggle-row" for="audio"
+              ><span
+                ><strong>Mac audio</strong
+                ><small>Hear what’s happening on your Mac.</small></span
+              ><input
+                class="switch"
+                type="checkbox"
+                name="audio"
+                id="audio"
+                checked /></label
+            ><label class="toggle-row" for="curtain"
+              ><span
+                ><strong>Private display</strong
+                ><small
+                  >Blank the Mac’s physical screen while connected.</small
+                ></span
+              ><input
+                class="switch"
+                type="checkbox"
+                name="curtain"
+                id="curtain"
+                checked
+            /></label>
+          </div>
+          <button
+            class="btn btn-primary btn-glass connect-button"
+            type="submit"
+          >
+            <span>Connect to Mac</span><span aria-hidden="true">↗</span>
+          </button>
+          <p class="privacy-note">
+            <svg viewBox="0 0 24 24">
+              <path d="M12 3 4 6v6c0 5 8 9 8 9s8-4 8-9V6z" />
+              <path d="m8 12 3 3 5-6" /></svg
+            >Your password is never saved to disk.
+          </p>
+        </form>
+      </section>
+    </main>
+    <footer class="app-footer">
+      <span
+        >iShareScreen <span class="footer-divider">/</span> A window to your
+        Mac.</span
+      ><span>Independent. Open source. Made to connect.</span>
+    </footer>
+    <script>
+      function prepVideo() {
+        const f = document.querySelector("[name=frontend]");
+        if (f.value === "browser") window.open("/video-wait", "_blank");
+        return true;
+      }
+    </script>
+  </body>
+</html>

@@ -4,8 +4,8 @@ build-backend = "hatchling.build"
 
 [project]
 name = "isharescreen"
-version = "0.1.0"
-description = "Cross-platform client for Apple's macOS Screen Sharing High Performance mode"
+version = "0.2.0"
+description = "Native desktop client for standard macOS Screen Sharing over TCP"
 readme = "README.md"
 requires-python = ">=3.10"
 license = "AGPL-3.0-or-later"
@@ -27,6 +27,7 @@ classifiers = [
     "Topic :: System :: Networking",
 ]
 dependencies = [
+    "PySide6-Essentials>=6.10",
     # Core protocol + media
     "cryptography>=42.0",
     "pycryptodome>=3.20",

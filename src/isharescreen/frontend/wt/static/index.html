@@ -98,6 +98,18 @@
   }
   #openall:hover { background: rgba(40,140,240,1); }
 </style>
+<style>
+  /* A solid glass-inspired shelf keeps GPU work reserved for the stream. */
+  #topbar { background:linear-gradient(180deg,#f9fcf5,#eaf1e6); color:#203b30; font-family:-apple-system,"Segoe UI",sans-serif; border-bottom:1px solid #cbd9c5; gap:10px; }
+  #status.ok { color:#294d39; } #status.err { color:#9c3029; } #topbar.err { background:#fff1ef; color:#9c3029; }
+  #unmute,#res,#fs-btn { background:#f8fbf4; color:#294d39; border:1px solid #bdcfb7; border-radius:7px; transition:background .16s,color .16s; }
+  #unmute:hover,#res:hover,#fs-btn:hover { background:#dce9d6; }
+  #openall { background:#246247; border-color:#246247; border-radius:7px; } #openall:hover { background:#174b39; }
+  #topbar :focus-visible { outline:2px solid #246247; outline-offset:2px; }
+  #res option { background:#fbfcfa; color:#203b30; }
+  @media(max-width:600px) { #res{max-width:100px} #topbar{gap:5px;padding:0 6px} #openall{max-width:100px;overflow:hidden;text-overflow:ellipsis} }
+  @media(prefers-reduced-motion:reduce) { #topbar,#unmute,#res,#fs-btn{transition:opacity .12s,color .12s,background-color .12s} }
+</style>
 </head>
 <body>
 <div id="stage"><canvas id="screen" width="1280" height="800"></canvas></div>
