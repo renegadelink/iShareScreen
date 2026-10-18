@@ -1,125 +1,138 @@
-# iShareScreen
+# iShareScreen Desktop
 
-Cross-platform Python client for Apple's macOS Screen Sharing **High
-Performance** mode (HEVC RExt 4:4:4 over UDP/SRTP). Renders the host
-Mac's screen in a native wgpu window with hardware decode where
-available.
+A native Windows client for macOS Screen Sharing (Intel and Apple Silicon Macs),
+laid out like the Screen Sharing app on a Mac: a library of your computers, small
+connect and sign-in dialogs, and a window per remote desktop with a symbol toolbar.
+No browser is involved.
 
-## Setup
+<p align="center">
+  <img src="docs/screenshots/library-dark.png" alt="The library of saved computers, dark theme" width="49%">
+  <img src="docs/screenshots/library-grid-light.png" alt="The library as icons, light theme" width="49%">
+</p>
+<p align="center">
+  <img src="docs/screenshots/connect-to.png" alt="Connect To dialog" width="32%">
+  <img src="docs/screenshots/sign-in.png" alt="Sign-in dialog with Remember password" width="32%">
+  <img src="docs/screenshots/info-sheet.png" alt="The ⓘ sheet for editing a computer" width="32%">
+</p>
+<p align="center">
+  <img src="docs/screenshots/session.png" alt="A remote desktop with the symbol toolbar" width="80%">
+</p>
 
-### On the host Mac (the target you want to view)
+<sub>Screenshots are drawn by `docs/make_screenshots.py` from the real windows, with
+made-up computers and a drawn desktop.</sub>
 
-1. Any modern macOS that supports the Screen Sharing app's High
-   Performance mode (Apple Silicon, recent macOS).
-2. *System Settings → General → Sharing → **Screen Sharing*** → toggle on.
+## Run it
 
-### On the viewing machine
+Build the executable (below) and double-click **`dist/iShareScreen-Desktop.exe`**
+(`dist/iShareScreen.exe` is an identical copy). Python is bundled; there is nothing
+to install. The `.exe` is not committed to git because of its size (about 95 MB).
 
-#### macOS
+On the Mac, turn on **System Settings → General → Sharing → Screen Sharing**. The
+Mac must be reachable on TCP 5900, directly or through a VPN such as Tailscale.
 
-1. Install Python 3.10 or later (from [python.org](https://www.python.org/downloads/),
-   `brew install python`, or `uv python install 3.13`).
-2. Install iShareScreen:
-   ```sh
-   pip install git+https://github.com/renegadelink/iShareScreen.git
-   ```
+### The library
 
-#### Windows
+A sidebar (**All Connections**, **Connected**) and a header of symbol buttons: sidebar,
+grid/list, ⋯ (sort), ＋ (new connection, `Ctrl+N`) and search (`Ctrl+F`). Each row
+shows the name, address, last-connected time and an ⓘ button. Double-click or Enter
+connects. **ⓘ**, `Ctrl+E` or the right-click menu opens the **Edit** sheet (name,
+server address, username, Screen Sharing Type, port, viewing, with Connect and
+Done); the menu also has Rename, Forget saved password and Remove from library
+(open sessions to it stay connected).
 
-1. Install Python 3.10 or later from [python.org](https://www.python.org/downloads/)
-   (the installer includes pip; check "Add python.exe to PATH" during install).
-2. Open PowerShell or cmd and run:
-   ```sh
-   pip install git+https://github.com/renegadelink/iShareScreen.git
-   ```
+### Connecting
 
-3. (Optional, only if you want audio) install **libfdk-aac** — Apple's
-   PT=101 audio uses AAC-ELD-SBR, which Windows Media Foundation can't
-   decode. The cleanest source is [MSYS2](https://www.msys2.org):
-   ```sh
-   pacman -Sy --noconfirm mingw-w64-x86_64-fdk-aac
-   ```
-   This drops `libfdk-aac-2.dll` at `C:\msys64\mingw64\bin\`, which iss
-   searches automatically. If you already have [scoop](https://scoop.sh),
-   `scoop install msys2` followed by the same `pacman` command also
-   works — iss looks under `%USERPROFILE%\scoop\apps\msys2\current\mingw64\bin`
-   too. Without libfdk-aac, video works as normal and audio is silently
-   skipped.
+＋ opens **Connect To:** with one field for a hostname or IP address (`host:port` also
+works). The address is checked first, by reading the server's RFB banner and its
+offered login types, so you are never asked for credentials for a computer that is
+not there. A sign-in dialog then asks only for what that server wants (an account
+and password for a Mac; just a password, or nothing, for other VNC servers). It
+shows real progress, saves the computer on success, and opens the desktop in its own
+window. A wrong password returns to the sign-in dialog with everything else kept.
 
-#### Linux (Debian / Ubuntu)
+Every session has its own window, socket and lifecycle, so several Macs can be open
+at once; closing one never affects the others.
 
-1. Install Python and the system libraries that the GPU + window stack
-   need (Vulkan loader, OpenGL, X11 / Wayland surfaces, PortAudio,
-   AAC-ELD-SBR audio decoder):
-   ```sh
-   sudo apt install python3 python3-pip python3-venv \
-       libvulkan1 libgl1 libegl1 \
-       libxrandr2 libxinerama1 libxcursor1 libxi6 \
-       libportaudio2 libfdk-aac2 \
-       xclip
-   ```
-   `libfdk-aac2` is only used for audio; if you skip it, video still
-   works and audio is silently disabled.
+**Remember password** is off by default. When ticked, the password goes in
+**Windows Credential Manager** (never in the library file, and tied to your Windows
+account), and double-clicking that computer then connects by itself, still showing
+progress and any error. Changing a computer's address, port or username forgets its
+saved password so it can never be sent somewhere else, and a Mac that rejects a
+saved password makes the app ask for a new one.
 
-   `xclip` enables bidirectional clipboard sync with the macOS host. On
-   Wayland desktops use `wl-clipboard` instead. If neither is installed
-   iss logs a one-line warning at startup and runs without clipboard
-   sync — everything else still works.
-2. (Optional, for hardware HEVC decode on Intel GPUs) install vaapi:
-   ```sh
-   sudo apt install vainfo intel-media-va-driver-non-free
-   ```
-   For AMD, swap the driver: `sudo apt install mesa-va-drivers`.
-3. Install iShareScreen (in a venv recommended):
-   ```sh
-   python3 -m venv ~/.venvs/iss
-   ~/.venvs/iss/bin/pip install git+https://github.com/renegadelink/iShareScreen.git
-   ~/.venvs/iss/bin/iss     # or symlink to ~/.local/bin
-   ```
+### The session window
 
-For Fedora / Arch / openSUSE, translate the apt package names with your
-distro's package manager (most are named the same or very close).
+The toolbar uses symbols (the names are in the tooltips), grouped like macOS:
 
-### Firewall
+| Group | Buttons |
+|---|---|
+| Input | **Control** (turn off to only watch), **Share clipboard**, **Type clipboard** |
+| Mac shortcuts | **Launchpad**, **Mission Control**, **Show Desktop** |
+| View | **Zoom out**, **Actual size**, **Zoom in**, **Fit to window** |
+| **⋯** | Refresh, Full Screen (`Ctrl+Alt+Enter`), Reconnect, Ctrl = Command, Swap Alt/Win, Disconnect |
 
-iss connects to the host Mac over **TCP 5900** (control) plus two UDP
-flows: **5900** (audio + RTCP) and **5901** (video). It sends from both
-UDP ports during connect. If a firewall still blocks the stream, allow
-UDP 5900–5901 inbound.
+* Mission Control (Control+Up) and Show Desktop (F11, press again to restore) were
+  measured on both an Intel and an Apple Silicon Mac. Launchpad opens through
+  Spotlight and only types anything once it has seen Spotlight open, so it does
+  nothing on a Mac with another Spotlight shortcut, or on a screen too busy to tell.
+* When zoomed in, push the pointer against a window edge to scroll that way.
+* **Clipboard:** with Share clipboard on (the default, per session), text copied on
+  the Mac is copied locally, and text you copy here goes to the Mac when you switch
+  to that session or copy while it is focused. Whatever is on the clipboard when a
+  session starts is not sent. Plain text only; sent text is Latin-1 (other characters
+  become `?`) and at most 1 MB. **Type clipboard** types the text as keystrokes
+  instead, which handles other languages (emoji excepted).
+* **Keyboard:** the Windows key acts as Command and Alt as Option on the Mac. Turn on
+  **Ctrl = Command** so Ctrl+C, Ctrl+V and Ctrl+Z work as on Windows, and/or
+  **Swap Alt/Win** so Alt is Command and the Windows key is Option. Details are in
+  [packaging/README.md](packaging/README.md).
 
-## Usage
+The look follows Windows' light or dark setting (`ISS_THEME=light|dark` forces one).
+Audio is not implemented yet.
 
-```sh
-iss
+### What it connects to
+
+It speaks ordinary Screen Sharing ("Standard"): Apple's login (security type 30), RFB
+framebuffer updates and zlib over TCP 5900. It leaves the Mac's display and
+resolution alone. It also works with other VNC servers that offer VNC password or no
+authentication (RFB 3.7 and 3.8); servers that require TLS, VeNCrypt, Tight or RA2
+are refused with an explanation. That last path is tested against a local fake
+server only.
+
+**High Performance** (Apple's UDP video mode) is **planned for a later release**. It
+appears in Screen Sharing Type as unavailable. Early engine code is in the
+repository but is not part of this release and is hidden unless `ISS_EXPERIMENTAL_HP=1`
+is set; see `docs/DESKTOP_REDESIGN_HANDOFF.md` for what testing showed.
+
+## Develop and build
+
+```powershell
+python -m venv .venv
+.venv/Scripts/python.exe -m pip install -e '.[test]'
+.venv/Scripts/python.exe -m isharescreen.frontend.desktop.standard_app
 ```
 
-Opens the terminal UI: a connect form for host / username / password
-(masked) and resolution, then a live session view with per-tile fps and
-loss, throughput, UDP queue health, and a log tail. The actual screen
-streams in a separate window. Last-session values pre-fill the form on
-the next launch; passwords are never persisted.
+The `iss` and `isharescreen` console entry points also open the native app. To run
+the tests and build the executable (Windows x64, Python 3.14):
 
-Any flag accepted by `iss --headless` also pre-fills the form, so
-launchers can do:
-
-```sh
-iss --host mac.local -u me --advertise 1920x1080 --no-curtain
+```powershell
+./packaging/build.ps1
+.venv/Scripts/python.exe packaging/check_exe.py
 ```
 
-Useful keys in the live session: **f** force IDR refresh (fixes the
-rare gray patch the auto-recovery doesn't catch), **r** reconnect,
-**d** disconnect, **Ctrl-B** save a bug-report snapshot, **q** quit.
+See [packaging/README.md](packaging/README.md) for the build and the executable smoke
+check. The test suite (about 290 tests) drives the real windows against local fake
+servers (Apple login, VNC password, no authentication, RFB 3.7, refusals) and
+against real Macs only through the separate live checks described in the handoff
+document. To regenerate the screenshots: `python docs/make_screenshots.py`.
 
-For CI / scripted use:
+## Legacy protocol research
 
-```sh
-echo "$PASSWORD" | iss --headless --host mac.local -u me --password-stdin --auto-quit-secs 30
-```
+The repository retains the original High Performance protocol implementation,
+browser bridge, capture dissector and protocol notes for development. They are not
+part of the native app's normal operation.
 
 ## License
 
-AGPL-3.0-or-later. See [LICENSE](LICENSE).
-
-This is an independent reverse-engineering of a publicly-documented
-network protocol. No Apple source code, headers, or symbols are
-included.
+AGPL-3.0-or-later. See [LICENSE](LICENSE). Design reference attribution is in
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
