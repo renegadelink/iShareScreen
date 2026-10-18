@@ -319,7 +319,11 @@ def main(argv=None):
     parser.add_argument('-u','--user',default='',help='prefill the username for --host')
     parser.add_argument('--password-stdin',action='store_true',help='read the password for --host from stdin')
     parser.add_argument('--smoke-test',action='store_true',help=argparse.SUPPRESS)
+    parser.add_argument('--style',choices=('macos','glass'),
+                        help='look of the app: macos (the default) or glass (Liquid Glass); ISS_STYLE does the same')
     args = parser.parse_args(argv)
+    if args.style:
+        os.environ['ISS_STYLE'] = args.style
     secret = sys.stdin.readline().rstrip('\r\n') if args.password_stdin else ''
     app = QApplication.instance() or QApplication(sys.argv[:1])
     app.setApplicationName('iShareScreen')

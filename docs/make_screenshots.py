@@ -1,6 +1,7 @@
-"""Regenerate the README screenshots from the real windows, with made-up data.
+﻿"""Regenerate the README screenshots from the real windows, with made-up data.
 
-    python docs/make_screenshots.py
+    python docs/make_screenshots.py            # the macOS-style edition
+    python docs/make_screenshots.py --glass    # the Liquid Glass edition (glass-*.png)
 
 Uses a local fake server and a drawn desktop picture, so no real computer, account or
 desktop ever appears. Set QT_QPA_FONTDIR to your fonts folder if text renders as boxes
@@ -14,6 +15,9 @@ from pathlib import Path
 
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 os.environ['ISS_REDUCE_MOTION'] = '1'
+GLASS = '--glass' in sys.argv
+if GLASS:
+    os.environ['ISS_STYLE'] = 'glass'
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'tests'))
 
@@ -30,6 +34,7 @@ from isharescreen.frontend.desktop.settings import Settings                   # 
 from isharescreen.frontend.desktop.standard_app import AppController          # noqa: E402
 
 OUT = ROOT / 'docs' / 'screenshots'
+PREFIX = 'glass-' if GLASS else ''
 
 
 def desktop_picture(width=1440, height=810) -> QImage:
@@ -71,7 +76,8 @@ def main():
     OUT.mkdir(parents=True, exist_ok=True)
     app = QApplication([])
     app.setQuitOnLastWindowClosed(False)
-    theme.apply_theme(app, theme.DARK)
+    dark, light = (theme.GLASS, theme.GLASS) if GLASS else (theme.DARK, theme.LIGHT)
+    theme.apply_theme(app, dark)
     work = Path(tempfile.mkdtemp())
     controller = AppController(LibraryStore(work / 'library.json'), MemoryCredentialStore(), Settings(work / 's.json'))
     controller.notify = lambda text: None
@@ -87,9 +93,12 @@ def main():
         return False
 
     def shot(widget, name):
+        settle = time.time() + (0.6 if GLASS else 0)      # let the Liquid Glass fade-ins finish
         app.processEvents()
-        widget.grab().save(str(OUT / name))
-        print('wrote', OUT / name)
+        while time.time() < settle:
+            app.processEvents(); time.sleep(0.01)
+        widget.grab().save(str(OUT / (PREFIX + name)))
+        print('wrote', OUT / (PREFIX + name))
 
     store = controller.store
     now = time.time()
@@ -102,12 +111,12 @@ def main():
     library.resize(900, 520); library.show()
     library.list.setCurrentRow(0)
     shot(library, 'library-dark.png')
-    theme.apply_theme(app, theme.LIGHT)
+    theme.apply_theme(app, light)
     library.set_view('grid'); library.list.setCurrentRow(1)
     shot(library, 'library-grid-light.png')
     library.set_view('list')
 
-    theme.apply_theme(app, theme.DARK)
+    theme.apply_theme(app, dark)
     wizard = controller.open_wizard(); wizard.show()
     shot(wizard, 'connect-to.png')
     wizard.address.setText(f'127.0.0.1:{server.port}'); wizard.check_address()
@@ -140,3 +149,5 @@ def main():
 
 if __name__ == '__main__':
     main()
+
+

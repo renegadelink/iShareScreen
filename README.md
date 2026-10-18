@@ -21,6 +21,35 @@ No browser is involved.
 <sub>Screenshots are drawn by `docs/make_screenshots.py` from the real windows, with
 made-up computers and a drawn desktop.</sub>
 
+## Liquid Glass edition
+
+The same app in a second look, built on the
+[Liquid Glass design kit](https://github.com/pointlessduffin-21/liquid-glass-design):
+a soft sage field, frosted panels, opaque wells for lists and forms, pill buttons and
+short fades. The layout and every feature are the same. It ships as its own
+executable, **`dist/iShareScreen-LiquidGlass.exe`**, and shares the library and saved
+passwords with the standard edition. From source, add `--style glass` (or set
+`ISS_STYLE=glass`).
+
+<p align="center">
+  <img src="docs/screenshots/glass-library-dark.png" alt="Liquid Glass library" width="49%">
+  <img src="docs/screenshots/glass-library-grid-light.png" alt="Liquid Glass library as icons" width="49%">
+</p>
+<p align="center">
+  <img src="docs/screenshots/glass-connect-to.png" alt="Liquid Glass connect dialog" width="32%">
+  <img src="docs/screenshots/glass-sign-in.png" alt="Liquid Glass sign-in" width="32%">
+  <img src="docs/screenshots/glass-info-sheet.png" alt="Liquid Glass edit sheet" width="32%">
+</p>
+<p align="center">
+  <img src="docs/screenshots/glass-session.png" alt="Liquid Glass session toolbar" width="80%">
+</p>
+
+Qt cannot blur what is behind a window, so the glass is the kit's no-blur variant:
+translucent white panels over the painted field. It is light only. Panels turn opaque
+when Windows' *Transparency effects* are off (or `ISS_EFFECTS=reduced`), and
+`ISS_REDUCE_MOTION=1` keeps the fades to about 120 ms with no stagger. Nothing in
+the app moves or scales; motion is opacity and colour only.
+
 ## Run it
 
 Build the executable (below) and double-click **`dist/iShareScreen-Desktop.exe`**
@@ -124,7 +153,8 @@ See [packaging/README.md](packaging/README.md) for the build and the executable 
 check. The test suite (about 290 tests) drives the real windows against local fake
 servers (Apple login, VNC password, no authentication, RFB 3.7, refusals) and
 against real Macs only through the separate live checks described in the handoff
-document. To regenerate the screenshots: `python docs/make_screenshots.py`.
+document. To regenerate the screenshots: `python docs/make_screenshots.py` (add
+`--glass` for the Liquid Glass set).
 
 ## Legacy protocol research
 

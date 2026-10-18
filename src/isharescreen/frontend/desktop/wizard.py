@@ -9,6 +9,7 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 from PySide6.QtCore import Qt, QObject, Signal, QTimer
+from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QLabel, QLineEdit, QPushButton, QFrame,
     QStackedWidget, QProgressBar, QComboBox, QCheckBox, QToolButton)
 
@@ -18,7 +19,8 @@ from .hp import HPController, RESOLUTIONS
 from .icons import glyph
 from .library import SavedSystem, MODE_LABELS
 from .session import SessionController, close_socket
-from .theme import fade_in
+from .theme import fade_in, is_glass, label
+from .widgets import paint_backdrop, push_button, reveal, surface, tool_button
 
 HP_NOTE = 'High Performance is not available.'
 
@@ -123,20 +125,49 @@ class ConnectionWizard(QWidget):
         self.go(self.ADDRESS)
 
     # ── construction ─────────────────────────────────────────────────
+    # Space the window needs around the page: the macOS sheet's margins, or under Liquid Glass the
+    # field margin plus the frosted card's padding.
+    def _chrome(self) -> tuple[int, int]:
+        return (2 * 24 + 2 * 26, 24 + 28 + 24 + 22) if is_glass() else (44, 38)
+
     def _build(self, prefill):
-        root = QVBoxLayout(self); root.setContentsMargins(22, 20, 22, 18)
-        self.stack = QStackedWidget(); root.addWidget(self.stack)
+        root = QVBoxLayout(self)
+        self.stack = QStackedWidget()
+        if is_glass():
+            root.setContentsMargins(24, 24, 24, 28)
+            self.card = surface('strong', 'card', shadow=True)
+            card = QVBoxLayout(self.card); card.setContentsMargins(26, 24, 26, 22)
+            card.addWidget(self.stack)
+            root.addWidget(self.card)
+        else:
+            root.setContentsMargins(22, 20, 22, 18)
+            root.addWidget(self.stack)
         self.stack.addWidget(self._address_page())
         self.stack.addWidget(self._credentials_page(prefill))
         self.stack.addWidget(self._connecting_page())
 
+    def paintEvent(self, event):
+        paint_backdrop(self)                       # the field (under Liquid Glass) or the plain window colour
+
     def _address_page(self):
+        glass = is_glass()
         page = QWidget(); layout = QVBoxLayout(page); layout.setContentsMargins(0, 0, 0, 0); layout.setSpacing(10)
-        row = QHBoxLayout(); row.setSpacing(10)
-        label = QLabel('Connect To:'); row.addWidget(label)
+        if glass:
+            eyebrow = QLabel('NEW CONNECTION'); eyebrow.setObjectName('eyebrow')
+            eyebrow_font = QFont(eyebrow.font()); eyebrow_font.setLetterSpacing(QFont.SpacingType.AbsoluteSpacing, 1.1)
+            eyebrow.setFont(eyebrow_font)
+            heading = QLabel('Connect to a computer'); heading.setObjectName('pageTitle')
+            sub = QLabel('Enter its hostname or IP address. We check that a VNC server answers before asking you to sign in.')
+            sub.setObjectName('pageSub'); sub.setWordWrap(True)
+            for widget in (eyebrow, heading, sub):
+                layout.addWidget(widget)
+            layout.addSpacing(6)
+        row = QVBoxLayout() if glass else QHBoxLayout(); row.setSpacing(6 if glass else 10)
+        caption = QLabel(label('Connect To:', 'Hostname or IP address')); caption.setObjectName('fieldLabel')
+        row.addWidget(caption)
         self.address = QLineEdit(); self.address.setPlaceholderText('Hostname or IP address')
         self.address.setAccessibleName('Connect To: hostname or IP address')
-        label.setBuddy(self.address)
+        caption.setBuddy(self.address)
         self.address.textChanged.connect(self._address_edited)
         self.address.returnPressed.connect(self.check_address)
         row.addWidget(self.address, 1)
@@ -146,10 +177,10 @@ class ConnectionWizard(QWidget):
         layout.addWidget(self.address_status)
         layout.addSpacing(6)
         buttons = QHBoxLayout(); buttons.setSpacing(8); buttons.addStretch(1)
-        self.stop_check = QPushButton('Stop'); self.stop_check.clicked.connect(self.cancel_check); self.stop_check.hide()
+        self.stop_check = push_button('Stop'); self.stop_check.clicked.connect(self.cancel_check); self.stop_check.hide()
         buttons.addWidget(self.stop_check)
-        cancel = QPushButton('Cancel'); cancel.clicked.connect(self.close); buttons.addWidget(cancel)
-        self.continue_button = QPushButton('Connect'); self.continue_button.setObjectName('primary')
+        cancel = push_button('Cancel'); cancel.clicked.connect(self.close); buttons.addWidget(cancel)
+        self.continue_button = push_button('Connect', 'primary')
         self.continue_button.setDefault(True); self.continue_button.clicked.connect(self.check_address)
         buttons.addWidget(self.continue_button)
         layout.addLayout(buttons)
@@ -171,41 +202,60 @@ class ConnectionWizard(QWidget):
         layout.addLayout(head)
 
         # What is asked for follows the server: account (Mac), password only, or nothing.
-        grid = QGridLayout(); grid.setHorizontalSpacing(10); grid.setVerticalSpacing(8)
-        grid.setColumnMinimumWidth(0, 120)
+        # macOS puts each label left of its control; Liquid Glass stacks label over control.
+        glass = is_glass()
+        grid = QGridLayout(); grid.setHorizontalSpacing(10); grid.setVerticalSpacing(6 if glass else 8)
+        if not glass:
+            grid.setColumnMinimumWidth(0, 120)
+        cursor = [0]
+
+        def labelled(text):
+            widget = QLabel(text); widget.setObjectName('fieldLabel')
+            widget.setAlignment((Qt.AlignmentFlag.AlignLeft if glass else Qt.AlignmentFlag.AlignRight) | Qt.AlignmentFlag.AlignVCenter)
+            return widget
+
+        def place(caption, control):
+            row = cursor[0]
+            if glass:
+                grid.addWidget(caption, row, 0, 1, 2); grid.addWidget(control, row + 1, 0, 1, 2); cursor[0] += 2
+            else:
+                grid.addWidget(caption, row, 0); grid.addWidget(control, row, 1); cursor[0] += 1
+
+        def place_wide(widget):
+            grid.addWidget(widget, cursor[0], 0 if glass else 1, 1, 2 if glass else 1); cursor[0] += 1
+
         self.account_box = QWidget(); account = QHBoxLayout(self.account_box); account.setContentsMargins(0, 0, 0, 0)
-        self.username_label = QLabel('User Name:'); self.username_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        self.username_label = labelled(label('User Name:', 'User name'))
         self.username = QLineEdit(); self.username.setAccessibleName('User Name')
         self.username_label.setBuddy(self.username)
         account.addWidget(self.username)
-        grid.addWidget(self.username_label, 0, 0); grid.addWidget(self.account_box, 0, 1)
+        place(self.username_label, self.account_box)
         self.password_box = QWidget(); box = QHBoxLayout(self.password_box); box.setContentsMargins(0, 0, 0, 0); box.setSpacing(6)
-        self.password_label = QLabel('Password:'); self.password_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        self.password_label = labelled(label('Password:', 'Password'))
         self.password = QLineEdit(); self.password.setEchoMode(QLineEdit.EchoMode.Password); self.password.setAccessibleName('Password')
         self.password_label.setBuddy(self.password)
         self.username.returnPressed.connect(self.password.setFocus)
         self.password.returnPressed.connect(self.connect_session)
         box.addWidget(self.password)
-        self.show_password = QToolButton(); self.show_password.setCheckable(True); self.show_password.setIcon(glyph('eye'))
+        self.show_password = tool_button(); self.show_password.setCheckable(True); self.show_password.setIcon(glyph('eye'))
         self.show_password.setToolTip('Show password'); self.show_password.setAccessibleName('Show password')
         self.show_password.toggled.connect(self._toggle_password)
         box.addWidget(self.show_password)
-        grid.addWidget(self.password_label, 1, 0); grid.addWidget(self.password_box, 1, 1)
+        place(self.password_label, self.password_box)
         self.remember = QCheckBox('Remember password')
         self.remember.setChecked(self._remember_initial)
         self.remember.setVisible(self.credentials.available)
         self.remember.setToolTip(f'Kept in {self.credentials.description}, never in the library file. '
                                  'Double-clicking this computer will then connect without asking.')
-        grid.addWidget(self.remember, 2, 1)
+        place_wide(self.remember)
         self.auth_note = QLabel('This computer does not ask for a password.'); self.auth_note.setObjectName('hint')
-        self.auth_note.setWordWrap(True); self.auth_note.hide(); grid.addWidget(self.auth_note, 3, 1)
-        type_label = QLabel('Screen Sharing Type:'); type_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        self.auth_note.setWordWrap(True); self.auth_note.hide(); place_wide(self.auth_note)
+        type_label = labelled(label('Screen Sharing Type:', 'Screen sharing type'))
         self.mode = QComboBox(); self.mode.setAccessibleName('Screen Sharing Type')
         self.mode.addItem(MODE_LABELS['standard'], 'standard'); self.mode.addItem(MODE_LABELS['high_performance'], 'high_performance')
         type_label.setBuddy(self.mode)
-        grid.addWidget(type_label, 4, 0); grid.addWidget(self.mode, 4, 1)
-        self.resolution_label = QLabel('Resolution:')
-        self.resolution_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        place(type_label, self.mode)
+        self.resolution_label = labelled(label('Resolution:', 'Resolution'))
         self.resolution = QComboBox(); self.resolution.setAccessibleName('Resolution')
         for value, text in RESOLUTIONS:
             self.resolution.addItem(text, value)
@@ -215,34 +265,40 @@ class ConnectionWizard(QWidget):
         self.hp_note = QLabel(); self.hp_note.setObjectName('hint'); self.hp_note.setWordWrap(True)
         for widget in (self.resolution_label, self.resolution, self.hp_note):
             widget.hide()
-        grid.addWidget(self.resolution_label, 5, 0); grid.addWidget(self.resolution, 5, 1)
-        grid.addWidget(self.hp_note, 6, 1)
+        place(self.resolution_label, self.resolution)
+        place_wide(self.hp_note)
         self._set_hp(False, HP_NOTE)
         self.mode.currentIndexChanged.connect(self._mode_changed)
         layout.addLayout(grid)
 
-        self.options = QPushButton('More ▸'); self.options.setObjectName('link'); self.options.setCheckable(True)
+        self.options = push_button('More ▸', 'link'); self.options.setCheckable(True)
         self.options.setCursor(Qt.CursorShape.PointingHandCursor); self.options.toggled.connect(self._show_options)
         layout.addWidget(self.options, 0, Qt.AlignmentFlag.AlignLeft)
         self.more_box = QWidget(); more = QGridLayout(self.more_box); more.setContentsMargins(0, 0, 0, 0)
-        more.setHorizontalSpacing(10); more.setVerticalSpacing(8); more.setColumnMinimumWidth(0, 120)
-        name_label = QLabel('Name:'); name_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        more.setHorizontalSpacing(10); more.setVerticalSpacing(6 if glass else 8)
+        if not glass:
+            more.setColumnMinimumWidth(0, 120)
+        name_label = labelled(label('Name:', 'Name'))
         self.name = QLineEdit(prefill.name if prefill else ''); self.name.setPlaceholderText('Optional, e.g. Studio Mac')
         self.name.setAccessibleName('Name (optional)'); name_label.setBuddy(self.name)
-        view_label = QLabel('Viewing:'); view_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        view_label = labelled(label('Viewing:', 'Viewing'))
         self.view = QComboBox(); self.view.addItem('Fit to window', 'fit'); self.view.addItem('Actual size', 'actual')
         self.view.setAccessibleName('Viewing'); view_label.setBuddy(self.view)
         if prefill and prefill.view == 'actual':
             self.view.setCurrentIndex(1)
-        more.addWidget(name_label, 0, 0); more.addWidget(self.name, 0, 1)
-        more.addWidget(view_label, 1, 0); more.addWidget(self.view, 1, 1)
+        if glass:
+            more.addWidget(name_label, 0, 0); more.addWidget(self.name, 1, 0)
+            more.addWidget(view_label, 2, 0); more.addWidget(self.view, 3, 0)
+        else:
+            more.addWidget(name_label, 0, 0); more.addWidget(self.name, 0, 1)
+            more.addWidget(view_label, 1, 0); more.addWidget(self.view, 1, 1)
         self.more_box.hide(); layout.addWidget(self.more_box)
 
         self.cred_status = QLabel(); self.cred_status.setWordWrap(True); self.cred_status.setAccessibleName('Sign-in result')
         layout.addWidget(self.cred_status)
         buttons = QHBoxLayout(); buttons.setSpacing(8); buttons.addStretch(1)
-        back = QPushButton('Cancel'); back.clicked.connect(self.close); buttons.addWidget(back)
-        self.connect_button = QPushButton('Sign In'); self.connect_button.setObjectName('primary')
+        back = push_button('Cancel'); back.clicked.connect(self.close); buttons.addWidget(back)
+        self.connect_button = push_button(label('Sign In', 'Sign in'), 'primary')
         self.connect_button.setDefault(True); self.connect_button.clicked.connect(self.connect_session)
         buttons.addWidget(self.connect_button)
         layout.addLayout(buttons)
@@ -256,7 +312,7 @@ class ConnectionWizard(QWidget):
         self.phase = QLabel('Starting…'); self.phase.setAccessibleName('Connection progress'); layout.addWidget(self.phase)
         layout.addSpacing(4)
         buttons = QHBoxLayout(); buttons.addStretch(1)
-        self.cancel_connect = QPushButton('Cancel'); self.cancel_connect.clicked.connect(self.cancel_connection)
+        self.cancel_connect = push_button('Cancel'); self.cancel_connect.clicked.connect(self.cancel_connection)
         buttons.addWidget(self.cancel_connect); layout.addLayout(buttons)
         return page
 
@@ -268,11 +324,15 @@ class ConnectionWizard(QWidget):
         layout.activate()
         # sizeHint() lays word-wrapped labels out at their narrowest, so ask for the real width.
         height = layout.totalHeightForWidth(CONTENT_WIDTH) if layout.hasHeightForWidth() else layout.sizeHint().height()
-        self.setFixedSize(CONTENT_WIDTH + 44, height + 38)
+        extra_width, extra_height = self._chrome()
+        self.setFixedSize(CONTENT_WIDTH + extra_width, height + extra_height)
 
     def go(self, stage):
+        changed = self.stack.currentIndex() != stage
         self.stack.setCurrentIndex(stage)
         self._fit()
+        if changed and is_glass() and self.isVisible():
+            reveal([self.stack.currentWidget()], stagger=False)     # a short fade between steps
         if stage == self.ADDRESS:
             self.address.setFocus()
         elif stage == self.CREDENTIALS:
@@ -380,7 +440,8 @@ class ConnectionWizard(QWidget):
         self.password_box.setVisible(result.auth != 'none'); self.password_label.setVisible(result.auth != 'none')
         self.remember.setVisible(self.credentials.available and result.auth != 'none')
         self.auth_note.setVisible(result.auth == 'none')
-        self.password_label.setText('Password:' if result.auth == 'account' else 'VNC Password:')
+        self.password_label.setText(label('Password:', 'Password') if result.auth == 'account'
+                                    else label('VNC Password:', 'VNC password'))
         self.password.setAccessibleName('Password' if result.auth == 'account' else 'VNC Password')
         available, note = self._hp_available(result) if self._hp_available else (False, HP_NOTE)
         self._set_hp(bool(available), note)
@@ -405,7 +466,7 @@ class ConnectionWizard(QWidget):
         self._end_check()
         self.verified = None
         _status(self.address_status, message, 'error')
-        self.continue_button.setText('Try Again')
+        self.continue_button.setText(label('Try Again', 'Try again'))
         self._fit()
         self.address.setFocus()
 
@@ -503,6 +564,8 @@ class ConnectionWizard(QWidget):
         super().showEvent(event)
         if first:
             fade_in(self)
+            if is_glass():
+                reveal([self.card], stagger=False)
             if self._auto_check and self.address.text().strip():
                 QTimer.singleShot(0, self.check_address)
 

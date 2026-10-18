@@ -1,6 +1,8 @@
 # Native Windows desktop build
 
-Run `dist/iShareScreen-Desktop.exe` (also copied to `dist/iShareScreen.exe`).
+Run `dist/iShareScreen-Desktop.exe` (also copied to `dist/iShareScreen.exe`). The
+Liquid Glass edition is `dist/iShareScreen-LiquidGlass.exe`: the same app launched
+with the glass look (`glass_launcher.py`, `iShareScreen-LiquidGlass.spec`).
 Python is bundled. This is a native Qt application laid out like macOS Screen
 Sharing: a library window of saved computers, small "Connect To:" and sign-in
 dialogs, and one window per remote desktop. It opens no browser and no HTTP

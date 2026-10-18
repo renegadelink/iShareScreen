@@ -12,6 +12,8 @@ from PySide6.QtGui import (QColor, QFont, QIcon, QIconEngine, QPainter, QPainter
                            QPolygonF)
 from PySide6.QtWidgets import QApplication
 
+from .theme import tokens
+
 Draw = Callable[[QPainter, QColor, QColor], None]
 _GLYPHS: dict[str, Draw] = {}
 
@@ -296,10 +298,12 @@ class GlyphEngine(QIconEngine):
         if mode == QIcon.Mode.Disabled:
             color = palette.color(QPalette.ColorGroup.Disabled, QPalette.ColorRole.WindowText)
         elif mode == QIcon.Mode.Selected or state == QIcon.State.On:
-            accent = palette.color(QPalette.ColorRole.HighlightedText)       # sits on the selection colour
-            color = accent
-        elif state == QIcon.State.On:
-            color = palette.color(QPalette.ColorRole.HighlightedText)    # checked buttons sit on the accent colour
+            # Sits on the selection / checked colour: white on macOS' accent, the accent itself on glass.
+            override = tokens().get('icon_selected' if mode == QIcon.Mode.Selected else 'icon_on')
+            color = QColor(override) if override else palette.color(QPalette.ColorRole.HighlightedText)
+            accent = color
+        elif mode == QIcon.Mode.Active:                  # a symbol on a primary (accent-filled) button
+            color = QColor(tokens().get('on_accent', '#ffffff'))
         else:
             color = palette.color(QPalette.ColorRole.WindowText)
         size = min(rect.width(), rect.height())

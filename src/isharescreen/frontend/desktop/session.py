@@ -14,7 +14,8 @@ from ...proxy.address import format_address
 from ...proxy.standard import (StandardClient, AuthRejected, UnsupportedSecurity, UnsupportedEncoding,
                                DesktopUnavailable, ServerRefused)
 from .icons import glyph
-from .theme import tokens, fade_in
+from .theme import tokens, fade_in, is_glass
+from .widgets import push_button, surface, tool_button
 
 QWIDGETSIZE_MAX = 16777215
 
@@ -445,7 +446,7 @@ class SessionWindow(QMainWindow):
         self.banner = QFrame(); self.banner.setObjectName('banner'); self.banner.hide()
         bar = QHBoxLayout(self.banner); bar.setContentsMargins(16,8,16,8)
         self.banner_text = QLabel(); self.banner_text.setWordWrap(True); bar.addWidget(self.banner_text,1)
-        self.banner_button = QPushButton('Reconnect…'); self.banner_button.clicked.connect(self.reconnect); bar.addWidget(self.banner_button)
+        self.banner_button = push_button('Reconnect…'); self.banner_button.clicked.connect(self.reconnect); bar.addWidget(self.banner_button)
         central = QWidget(); column = QVBoxLayout(central); column.setContentsMargins(0,0,0,0); column.setSpacing(0)
         column.addWidget(self.banner); column.addWidget(self.scroll,1)
         self.setCentralWidget(central)
@@ -485,14 +486,14 @@ class SessionWindow(QMainWindow):
                                             'and the Windows key as Command')
         self.disconnect_action = self._action('Disconnect', self.close, 'power',
                                               tip='Disconnect and close this window')
-        self.toolbar = QFrame(); self.toolbar.setObjectName('header')
+        self.toolbar = surface('strong' if is_glass() else 'well', 'header', radius=0)
         row = QHBoxLayout(self.toolbar); row.setContentsMargins(12, 6, 12, 6); row.setSpacing(12)
         row.addStretch(1)
         row.addWidget(self._segment(self.control_action, self.clip_action, self.type_action))
         row.addWidget(self._segment(self.launchpad_action, self.mission_action, self.desktop_action))
         row.addStretch(1)
         row.addWidget(self._segment(self.zoom_out_action, self.actual, self.zoom_in_action, self.fit_action))
-        self.more_button = QToolButton(); self.more_button.setIcon(glyph('more'))
+        self.more_button = tool_button(); self.more_button.setIcon(glyph('more'))
         self.more_button.setToolTip('More'); self.more_button.setAccessibleName('More')
         self.more_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
         self.more_menu = QMenu(self.more_button)
@@ -530,7 +531,7 @@ class SessionWindow(QMainWindow):
         return action
 
     def _button(self, action):
-        button = QToolButton(); button.setDefaultAction(action)
+        button = tool_button(); button.setDefaultAction(action)
         button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonIconOnly)
         button.setAccessibleName(action.text())
         button.setFocusPolicy(Qt.FocusPolicy.TabFocus)
@@ -538,7 +539,7 @@ class SessionWindow(QMainWindow):
 
     @staticmethod
     def _segment_widget(*buttons):
-        segment = QFrame(); segment.setObjectName('segment')
+        segment = surface('segment', 'segment')
         layout = QHBoxLayout(segment); layout.setContentsMargins(3, 2, 3, 2); layout.setSpacing(1)
         for button in buttons:
             layout.addWidget(button)

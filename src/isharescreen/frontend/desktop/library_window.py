@@ -4,14 +4,16 @@ from __future__ import annotations
 import time
 from typing import Iterable
 
-from PySide6.QtCore import Qt, Signal, QSize, QRect, QRectF, QPoint, QEvent
-from PySide6.QtGui import QAction, QActionGroup, QColor, QFont, QIcon, QKeySequence, QPainter, QShortcut
+from PySide6.QtCore import Qt, Signal, QSize, QRect, QRectF, QPoint, QPointF, QEvent
+from PySide6.QtGui import (QAction, QActionGroup, QBrush, QColor, QFont, QIcon, QKeySequence, QLinearGradient, QPainter,
+                           QPainterPath, QPen, QShortcut)
 from PySide6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton, QFrame,
     QStackedWidget, QListWidget, QListWidgetItem, QStyledItemDelegate, QStyle, QMenu, QAbstractItemView, QToolButton)
 
 from .icons import glyph
 from .library import SavedSystem, describe_last_connected
-from .theme import tokens, fade_in
+from .theme import tokens, fade_in, is_glass, label
+from .widgets import FieldWidget, PageHead, push_button, reveal, surface, tool_button
 
 ID_ROLE = Qt.ItemDataRole.UserRole
 ACTIVE_ROLE = Qt.ItemDataRole.UserRole + 1
@@ -53,7 +55,61 @@ class RowDelegate(QStyledItemDelegate):
             self._paint_row(painter, option, index, name, subtitle, selected, t)
         painter.restore()
 
+    def _paint_row_glass(self, painter, option, index, name, subtitle, selected, t):
+        """Liquid Glass: an opaque well row, a hairline between rows, and for the selected row a soft
+        green tint with the kit's lime-to-green indicator bar. Status is a pill with a word."""
+        row = option.rect
+        hover = bool(option.state & QStyle.StateFlag.State_MouseOver)
+        painter.fillRect(row, QColor(t['well']))
+        if selected:
+            painter.fillRect(row, QColor(18, 121, 66, 26))
+            bar = QLinearGradient(QPointF(row.left(), row.top() + 9), QPointF(row.left(), row.bottom() - 9))
+            bar.setColorAt(0, QColor(t['brand_lime'])); bar.setColorAt(1, QColor(t['accent']))
+            path = QPainterPath(); path.addRoundedRect(QRectF(row.left(), row.top() + 9, 4, row.height() - 18), 2, 2)
+            painter.fillPath(path, QBrush(bar))
+        elif hover:
+            painter.fillRect(row, QColor(255, 255, 255, 190))
+        painter.setPen(QPen(QColor(16, 36, 26, 23), 1))
+        painter.drawLine(row.left() + 16, row.bottom(), row.right() - 16, row.bottom())
+        glyph('monitor').paint(painter, QRect(row.left() + 16, row.center().y() - 17, 34, 34))
+        info = self.info_rect(row)
+        active = index.data(ACTIVE_ROLE) or 0
+        small = QFont(option.font); small.setPixelSize(12)
+        painter.setFont(small)
+        status = 'Connected' if active == 1 else f'{active} sessions open' if active else ''
+        when = index.data(WHEN_ROLE)
+        right_edge = info.left() - 10
+        if status:
+            pill_w = painter.fontMetrics().horizontalAdvance(status) + 30
+            pill = QRectF(right_edge - pill_w, row.center().y() - 11, pill_w, 22)
+            painter.setPen(Qt.PenStyle.NoPen); painter.setBrush(QColor(24, 138, 60, 31))
+            painter.drawRoundedRect(pill, 11, 11)
+            painter.setBrush(QColor(24, 138, 60)); painter.drawEllipse(QPointF(pill.left() + 12, pill.center().y()), 3.5, 3.5)
+            painter.setPen(QColor(t['ok']))
+            painter.drawText(QRectF(pill.left() + 21, pill.top(), pill.width() - 24, pill.height()), Qt.AlignmentFlag.AlignVCenter, status)
+            right_edge = int(pill.left()) - 10
+        else:
+            width = painter.fontMetrics().horizontalAdvance(when) + 4
+            painter.setPen(QColor(t['muted']))
+            painter.drawText(QRect(right_edge - width, row.top(), width, row.height()),
+                             Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignRight, when)
+            right_edge -= width + 10
+        left = row.left() + 64
+        bold = QFont(option.font); bold.setPixelSize(14); bold.setWeight(QFont.Weight.DemiBold)
+        painter.setFont(bold); painter.setPen(QColor(t['brand_deep'] if selected else t['text']))
+        painter.drawText(QRect(left, row.top() + 8, max(40, right_edge - left), 20), Qt.AlignmentFlag.AlignVCenter,
+                         painter.fontMetrics().elidedText(name, Qt.TextElideMode.ElideRight, max(40, right_edge - left)))
+        painter.setFont(small); painter.setPen(QColor(t['muted']))
+        painter.drawText(QRect(left, row.top() + 28, max(40, right_edge - left), 18), Qt.AlignmentFlag.AlignVCenter,
+                         painter.fontMetrics().elidedText(subtitle, Qt.TextElideMode.ElideRight, max(40, right_edge - left)))
+        painter.setPen(QPen(QColor(16, 36, 26, 41), 1)); painter.setBrush(QColor('#ffffff'))
+        painter.drawRoundedRect(QRectF(info).adjusted(.5, .5, -.5, -.5), 11, 11)
+        glyph('info').paint(painter, QRect(info.center().x() - 8, info.center().y() - 8, 16, 16))
+
     def _paint_row(self, painter, option, index, name, subtitle, selected, t):
+        if is_glass():
+            self._paint_row_glass(painter, option, index, name, subtitle, selected, t)
+            return
         row = option.rect
         painter.fillRect(row, QColor(t['accent'] if selected else t['stripe'] if index.row() % 2 == 0 else t['window']))
         main = QColor(t['selected_text'] if selected else t['text'])
@@ -87,11 +143,15 @@ class RowDelegate(QStyledItemDelegate):
 
     def _paint_tile(self, painter, option, name, subtitle, selected, t):
         tile = option.rect.adjusted(6, 6, -6, -6)
+        glass = is_glass()
         if selected:
-            painter.setPen(Qt.PenStyle.NoPen); painter.setBrush(QColor(t['accent']))
-            painter.drawRoundedRect(tile, 10, 10)
-        main = QColor(t['selected_text'] if selected else t['text'])
-        soft = QColor(t['selected_text'] if selected else t['muted'])
+            if glass:                                           # a soft green tint with a green edge
+                painter.setPen(QPen(QColor(18, 121, 66, 71), 1)); painter.setBrush(QColor(18, 121, 66, 26))
+            else:
+                painter.setPen(Qt.PenStyle.NoPen); painter.setBrush(QColor(t['accent']))
+            painter.drawRoundedRect(QRectF(tile).adjusted(.5, .5, -.5, -.5), 14 if glass else 10, 14 if glass else 10)
+        main = QColor(t['brand_deep'] if glass and selected else t['selected_text'] if selected else t['text'])
+        soft = QColor(t['muted'] if glass else t['selected_text'] if selected else t['muted'])
         glyph('monitor').paint(painter, QRect(tile.center().x() - 30, tile.top() + 10, 60, 60),
                                mode=QIcon.Mode.Selected if selected else QIcon.Mode.Normal)
         bold = QFont(option.font); bold.setPixelSize(13); bold.setWeight(QFont.Weight.DemiBold)
@@ -111,10 +171,54 @@ class RowDelegate(QStyledItemDelegate):
         return super().editorEvent(event, model, option, index)
 
 
+class NavDelegate(QStyledItemDelegate):
+    """The glass rail's navigation items: a raised white pill for the active one, with the
+    lime-to-green indicator bar on the rail's edge; a soft white wash on hover."""
+    def sizeHint(self, option, index):
+        return QSize(option.rect.width(), 46)
+
+    def paint(self, painter, option, index):
+        t = tokens()
+        painter.save()
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        selected = bool(option.state & QStyle.StateFlag.State_Selected)
+        hover = bool(option.state & QStyle.StateFlag.State_MouseOver)
+        box = QRectF(option.rect).adjusted(2, 2, -2, -2)
+        if selected:
+            gradient = QLinearGradient(box.topLeft(), box.bottomLeft())
+            gradient.setColorAt(0, QColor(255, 255, 255, 242)); gradient.setColorAt(1, QColor(255, 255, 255, 199))
+            painter.setBrush(QBrush(gradient)); painter.setPen(QPen(QColor(15, 79, 52, 28), 1))
+            painter.drawRoundedRect(box, 12, 12)
+            painter.setPen(QPen(QColor(255, 255, 255, 255), 1))
+            painter.drawLine(QPointF(box.left() + 10, box.top() + 1.2), QPointF(box.right() - 10, box.top() + 1.2))
+            bar = QLinearGradient(QPointF(0, box.top() + 8), QPointF(0, box.bottom() - 8))
+            bar.setColorAt(0, QColor(t['brand_lime'])); bar.setColorAt(1, QColor(t['accent']))
+            path = QPainterPath(); path.addRoundedRect(QRectF(option.rect.left() - 8, box.top() + 8, 3, box.height() - 16), 1.5, 1.5)
+            painter.fillPath(path, QBrush(bar))
+        elif hover:
+            painter.setPen(Qt.PenStyle.NoPen); painter.setBrush(QColor(255, 255, 255, 184))
+            painter.drawRoundedRect(box, 12, 12)
+        icon = index.data(Qt.ItemDataRole.DecorationRole)
+        if isinstance(icon, QIcon):
+            icon.paint(painter, QRect(int(box.left()) + 12, int(box.center().y()) - 9, 18, 18), Qt.AlignmentFlag.AlignCenter,
+                       QIcon.Mode.Selected if selected else QIcon.Mode.Normal)
+        font = QFont(option.font); font.setPixelSize(14); font.setWeight(QFont.Weight.Bold if selected else QFont.Weight.DemiBold)
+        painter.setFont(font)
+        painter.setPen(QColor(t['brand_deep'] if selected else t['ink2']))
+        painter.drawText(QRectF(box.left() + 42, box.top(), box.width() - 48, box.height()), Qt.AlignmentFlag.AlignVCenter,
+                         index.data(Qt.ItemDataRole.DisplayRole))
+        painter.restore()
+
+
 class LibraryList(QListWidget):
-    """A list that keeps the row stripes going below the last item, like Finder."""
+    """A list that keeps the row stripes going below the last item, like Finder
+    (under Liquid Glass it sits on an opaque well instead, with no stripes)."""
     def paintEvent(self, event):
-        if self.viewMode() == QListWidget.ViewMode.ListMode:
+        if is_glass():
+            painter = QPainter(self.viewport())
+            painter.fillRect(self.viewport().rect(), QColor(tokens()['well']))
+            painter.end()
+        elif self.viewMode() == QListWidget.ViewMode.ListMode:
             painter = QPainter(self.viewport())
             t = tokens()
             row, y = 0, 0
@@ -144,48 +248,63 @@ class LibraryWindow(QMainWindow):
         self.active: dict[str, int] = {}
         self.sort_key = 'last'
         self.only_connected = False
-        root = QWidget(); root.setObjectName('root'); self.setCentralWidget(root)
-        outer = QHBoxLayout(root); outer.setContentsMargins(0, 0, 0, 0); outer.setSpacing(0)
+        glass = is_glass()
+        root = FieldWidget(); root.setObjectName('root'); self.setCentralWidget(root)
+        outer = QHBoxLayout(root)
+        outer.setContentsMargins(*(12, 12, 12, 12) if glass else (0, 0, 0, 0)); outer.setSpacing(12 if glass else 0)
 
-        # ── sidebar ──
-        self.sidebar = QFrame(); self.sidebar.setObjectName('sidebar'); self.sidebar.setFixedWidth(200)
-        side = QVBoxLayout(self.sidebar); side.setContentsMargins(10, 14, 10, 10); side.setSpacing(4)
+        # ── sidebar (under Liquid Glass: a floating glass rail with the brand on top) ──
+        self.sidebar = surface('rail', 'sidebar', shadow=True); self.sidebar.setFixedWidth(224 if glass else 200)
+        side = QVBoxLayout(self.sidebar)
+        side.setContentsMargins(*(10, 12, 10, 12) if glass else (10, 14, 10, 10)); side.setSpacing(4)
+        self.sidebar_button = self._tool('sidebar', 'Show or hide the sidebar', checkable=True)
+        self.sidebar_button.setChecked(True); self.sidebar_button.toggled.connect(self.sidebar.setVisible)
+        if glass:
+            brand = QHBoxLayout(); brand.setContentsMargins(8, 4, 0, 8); brand.setSpacing(10)
+            mark = QLabel(); mark.setPixmap(glyph('monitor').pixmap(30, 30)); mark.setFixedSize(30, 30)
+            names = QVBoxLayout(); names.setSpacing(0)
+            product = QLabel('iShareScreen'); product.setObjectName('heading')
+            tag = QLabel('SCREEN SHARING'); tag.setObjectName('eyebrow')
+            tag_font = QFont(tag.font()); tag_font.setLetterSpacing(QFont.SpacingType.AbsoluteSpacing, 1.0); tag.setFont(tag_font)
+            names.addWidget(product); names.addWidget(tag)
+            brand.addWidget(mark); brand.addLayout(names, 1)
+            side.addLayout(brand)
         self.side_list = QListWidget(); self.side_list.setObjectName('library'); self.side_list.setAccessibleName('Library sections')
         self.side_list.setFrameShape(QFrame.Shape.NoFrame)
-        for text, icon in (('All Connections', 'monitor'), ('Connected', 'link')):
-            item = QListWidgetItem(glyph(icon), text); item.setSizeHint(QSize(160, 34)); self.side_list.addItem(item)
+        if glass:
+            self.side_list.setItemDelegate(NavDelegate(self.side_list)); self.side_list.setMouseTracking(True)
+        for text, icon in ((label('All Connections', 'All connections'), 'monitor'), ('Connected', 'link')):
+            item = QListWidgetItem(glyph(icon), text); item.setSizeHint(QSize(160, 44 if glass else 34)); self.side_list.addItem(item)
         self.side_list.setCurrentRow(0)
         self.side_list.currentRowChanged.connect(self._section_changed)
         side.addWidget(self.side_list, 1)
         foot = QHBoxLayout(); foot.setSpacing(2)
-        self.side_add = self._tool('plus', 'New session (Ctrl+N)'); self.side_add.clicked.connect(self.new_session)
+        self.side_add = self._tool('plus', 'New connection (Ctrl+N)'); self.side_add.clicked.connect(self.new_session)
         foot.addWidget(self.side_add); foot.addStretch(1)
+        if glass:
+            foot.addWidget(self.sidebar_button)
         side.addLayout(foot)
         outer.addWidget(self.sidebar)
 
         # ── content ──
-        content = QWidget(); column = QVBoxLayout(content); column.setContentsMargins(0, 0, 0, 0); column.setSpacing(0)
-        header = QFrame(); header.setObjectName('header'); bar = QHBoxLayout(header)
-        bar.setContentsMargins(12, 8, 12, 8); bar.setSpacing(8)
-        self.sidebar_button = self._tool('sidebar', 'Show or hide the sidebar', checkable=True)
-        self.sidebar_button.setChecked(True); self.sidebar_button.toggled.connect(self.sidebar.setVisible)
-        bar.addWidget(self.sidebar_button)
-        self.title = QLabel('All Connections'); self.title.setObjectName('title'); bar.addWidget(self.title)
-        bar.addStretch(1)
+        content = QWidget(); column = QVBoxLayout(content); column.setContentsMargins(0, 0, 0, 0)
+        column.setSpacing(16 if glass else 0)
         self.search = QLineEdit(); self.search.setPlaceholderText('Search'); self.search.setClearButtonEnabled(True)
         self.search.setAccessibleName('Search computers'); self.search.setMaximumWidth(220); self.search.hide()
-        self.search.textChanged.connect(self.refresh); bar.addWidget(self.search)
-        self.grid_button = self._tool('grid', 'As Icons', checkable=True)
-        self.list_button = self._tool('list', 'As List', checkable=True); self.list_button.setChecked(True)
-        views = QFrame(); views.setObjectName('segment'); row = QHBoxLayout(views)
+        self.search.textChanged.connect(self.refresh)
+        self.grid_button = self._tool('grid', label('As Icons', 'As icons'), checkable=True)
+        self.list_button = self._tool('list', label('As List', 'As list'), checkable=True); self.list_button.setChecked(True)
+        views = surface('segment', 'segment'); row = QHBoxLayout(views)
         row.setContentsMargins(3, 2, 3, 2); row.setSpacing(1); row.addWidget(self.grid_button); row.addWidget(self.list_button)
-        bar.addWidget(views)
+        if glass:
+            views.setFixedHeight(44)
         self.grid_button.clicked.connect(lambda: self.set_view('grid')); self.list_button.clicked.connect(lambda: self.set_view('list'))
-        self.more = QToolButton(); self.more.setIcon(glyph('more')); self.more.setToolTip('More'); self.more.setAccessibleName('More')
+        self.more = tool_button(); self.more.setIcon(glyph('more')); self.more.setToolTip('More'); self.more.setAccessibleName('More')
         self.more.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
         menu = QMenu(self.more)
         sorts = QActionGroup(menu)
-        self.sort_name = QAction('Sort by Name', menu, checkable=True); self.sort_last = QAction('Sort by Last Connected', menu, checkable=True)
+        self.sort_name = QAction(label('Sort by Name', 'Sort by name'), menu, checkable=True)
+        self.sort_last = QAction(label('Sort by Last Connected', 'Sort by last connected'), menu, checkable=True)
         for action, key in ((self.sort_last, 'last'), (self.sort_name, 'name')):
             sorts.addAction(action); menu.addAction(action); action.triggered.connect(lambda _=False, k=key: self.set_sort(k))
         self.sort_last.setChecked(True)
@@ -194,13 +313,41 @@ class LibraryWindow(QMainWindow):
         self.hp_action.setToolTip('Offer High Performance when connecting. It did not work with every Mac in testing.')
         self.hp_action.triggered.connect(self.hp_toggled)
         menu.addAction(self.hp_action)
-        self.more.setMenu(menu); bar.addWidget(self.more)
-        self.new_button = self._tool('plus', 'New session (Ctrl+N)'); self.new_button.clicked.connect(self.new_session)
-        bar.addWidget(self.new_button)
+        self.more.setMenu(menu)
+        if glass:                                   # one primary action per view: a green pill with the ＋ symbol
+            self.new_button = push_button('', 'primary', tip='New connection (Ctrl+N)')
+            self.new_button.setIcon(glyph('plus')); self.new_button.setAccessibleName('New connection')
+            self.new_button.clicked.connect(self.new_session)
+        else:
+            self.new_button = self._tool('plus', 'New session (Ctrl+N)'); self.new_button.clicked.connect(self.new_session)
         self.search_button = self._tool('search', 'Search (Ctrl+F)'); self.search_button.clicked.connect(self.toggle_search)
-        bar.addWidget(self.search_button)
-        column.addWidget(header)
-        self.stack = QStackedWidget(); column.addWidget(self.stack, 1)
+        if glass:
+            self.head = PageHead('Library', 'All connections', 'Your Macs and other VNC computers. Double-click one to connect.')
+            self.title = self.head.title
+            for widget in (self.search, views, self.more, self.search_button, self.new_button):
+                self.head.actions.addWidget(widget)
+            column.addWidget(self.head)
+        else:
+            header = surface('well', 'header', radius=0); bar = QHBoxLayout(header)
+            bar.setContentsMargins(12, 8, 12, 8); bar.setSpacing(8)
+            self.title = QLabel('All Connections'); self.title.setObjectName('title')
+            for widget in (self.sidebar_button, self.title):
+                bar.addWidget(widget)
+            bar.addStretch(1)
+            for widget in (self.search, views, self.more, self.new_button, self.search_button):
+                bar.addWidget(widget)
+            column.addWidget(header)
+        self.stack = QStackedWidget()
+        if glass:                                   # a frosted card holding an opaque well for the list
+            self.card = surface('glass', 'card', shadow=True)
+            card_layout = QVBoxLayout(self.card); card_layout.setContentsMargins(14, 14, 14, 14)
+            self.well = surface('well', 'well')
+            well_layout = QVBoxLayout(self.well); well_layout.setContentsMargins(6, 6, 6, 6)
+            well_layout.addWidget(self.stack)
+            card_layout.addWidget(self.well)
+            column.addWidget(self.card, 1)
+        else:
+            column.addWidget(self.stack, 1)
         outer.addWidget(content, 1)
 
         empty = QWidget(); box = QVBoxLayout(empty); box.setAlignment(Qt.AlignmentFlag.AlignCenter); box.setSpacing(12)
@@ -208,7 +355,7 @@ class LibraryWindow(QMainWindow):
         body = QLabel('Connect to a Mac that has Screen Sharing turned on. Once you connect successfully, '
                       'it is saved here so you can reopen it in two clicks. A password is saved only if you ask for it.')
         body.setObjectName('emptyBody'); body.setWordWrap(True); body.setAlignment(Qt.AlignmentFlag.AlignCenter); body.setFixedWidth(430)
-        start = QPushButton('New session'); start.setObjectName('primary'); start.clicked.connect(self.new_session)
+        start = push_button(label('New session', 'New connection'), 'primary'); start.clicked.connect(self.new_session)
         for widget in (title, body):
             box.addWidget(widget, 0, Qt.AlignmentFlag.AlignHCenter)
         box.addSpacing(6); box.addWidget(start, 0, Qt.AlignmentFlag.AlignHCenter)
@@ -241,7 +388,7 @@ class LibraryWindow(QMainWindow):
 
     @staticmethod
     def _tool(icon, tip, checkable=False):
-        button = QToolButton(); button.setIcon(glyph(icon)); button.setToolTip(tip); button.setAccessibleName(tip)
+        button = tool_button(); button.setIcon(glyph(icon)); button.setToolTip(tip); button.setAccessibleName(tip)
         button.setCheckable(checkable)
         return button
 
@@ -280,8 +427,15 @@ class LibraryWindow(QMainWindow):
 
     def _section_changed(self, row: int):
         self.only_connected = row == 1
-        self.title.setText('Connected' if self.only_connected else 'All Connections')
+        if is_glass():
+            self.head.set_text('Library', 'Connected' if self.only_connected else 'All connections',
+                               'Sessions that are open right now.' if self.only_connected
+                               else 'Your Macs and other VNC computers. Double-click one to connect.')
+        else:
+            self.title.setText('Connected' if self.only_connected else 'All Connections')
         self.refresh()
+        if is_glass() and self.isVisible():
+            reveal([self.well], stagger=False)                  # a short fade between views
 
     def toggle_search(self):
         """The ⌕ button: show the search field; with text in it, refocus; empty, hide it again."""
@@ -364,6 +518,8 @@ class LibraryWindow(QMainWindow):
         super().showEvent(event)
         if first:
             fade_in(self)
+            if is_glass():                  # the rail, the page head and the card arrive one after another
+                reveal([self.sidebar, self.head, self.card])
 
     def closeEvent(self, event):
         event.ignore()                  # the app decides, since sessions may be open
