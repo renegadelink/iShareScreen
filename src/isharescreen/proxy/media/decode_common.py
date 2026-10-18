@@ -218,3 +218,26 @@ __all__ = [
     "_HW_FRAME_FORMATS",
     "_av_frame_to_tile",
 ]
+
+
+def available_hwaccels(candidates: "tuple[str, ...]") -> "tuple[str, ...]":
+    """Keep only the hwaccel device types this PyAV build supports.
+
+    Requesting a device type PyAV was built without (e.g. ``vaapi`` from the PyPI
+    wheel, which bundles no libva) does not fail: libav quietly hands back a
+    software context, so the type looks usable when it is not. Filtering on
+    ``hwdevices_available()`` lets the next candidate (e.g. ``cuda``) be tried.
+    It does not detect hardware: a supported type with no device behind it still
+    fails at context creation, which callers already handle."""
+    try:
+        from av.codec.hwaccel import hwdevices_available
+        present = set(hwdevices_available())
+    except Exception:
+        return candidates
+    return tuple(c for c in candidates if c in present)
+
+
+def context_is_hwaccel(ctx: object) -> "bool | None":
+    """``CodecContext.is_hwaccel`` where PyAV provides it, else ``None`` (unknown)."""
+    value = getattr(ctx, "is_hwaccel", None)
+    return value if isinstance(value, bool) else None

@@ -55,7 +55,8 @@ def _is_vcl(nal_type: int) -> bool:
 def qsv_hevc444_available() -> bool:
     """True iff `hevc_qsv` hardware-decodes a HEVC 4:4:4 sample to a hardware
     (packed) format. Mirrors hwcaps' probe but for the QSV decoder."""
-    # A 64x64 HEVC Main 4:4:4 8-bit IDR access unit (same sample hwcaps uses).
+    # A 64x64 HEVC Main 4:4:4 8-bit IDR access unit. hwcaps now uses a 160x160
+    # one (NVDEC refuses HEVC below 144x144); this QSV sample is left as it was.
     sample = bytes.fromhex(
         "0000000140010c01ffff0408000003009e280000030000baba0240000000014201"
         "010408000003009e280000030000ba90041020b2dd25261734040000030004003d"
