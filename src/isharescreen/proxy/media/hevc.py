@@ -56,6 +56,8 @@ from .decode_common import (
     _CODEC_FLAG2_FAST,
     _TileSlot,
     _HW_FRAME_FORMATS,
+    available_hwaccels,
+    context_is_hwaccel,
     _av_frame_to_tile,
 )
 
@@ -132,7 +134,8 @@ _PLATFORM_HWACCELS: dict[str, tuple[str, ...]] = {
 
 
 def _platform_hwaccels() -> tuple[str, ...]:
-    return _PLATFORM_HWACCELS.get(sys.platform, _PLATFORM_HWACCELS["*"])
+    return available_hwaccels(
+        _PLATFORM_HWACCELS.get(sys.platform, _PLATFORM_HWACCELS["*"]))
 
 
 # `_TileSlot`, `_HW_FRAME_FORMATS`, and `_av_frame_to_tile` now live in
@@ -742,14 +745,19 @@ class HevcDecoder:
     def _publish_frame(self, frame: av.VideoFrame) -> None:
         """Map `frame.pts` back to its source tile and update that slot."""
         # One-time HW-binding truthfulness check: if we requested a hwaccel
-        # but the output is a software pixel format, the accel never bound
-        # (e.g. D3D11VA on a 4:4:4 stream) — relabel as software so the
+        # but it never bound (e.g. D3D11VA on a 4:4:4 stream) — judged by
+        # `is_hwaccel` where PyAV has it, else by a software output pixel
+        # format — relabel as software so the
         # profile log / `hw_accel` are honest and downstream stops assuming
         # a GPU surface. The decode itself is unaffected; only the label.
         if not self._hw_verified:
             self._hw_verified = True
-            if (self._hw_name is not None
-                    and frame.format.name not in _HW_FRAME_FORMATS):
+            # is_hwaccel is authoritative where PyAV has it: a bound NVDEC
+            # context still returns yuv444p after the hwdownload.
+            bound = context_is_hwaccel(self._codec)
+            if bound is None:
+                bound = frame.format.name in _HW_FRAME_FORMATS
+            if self._hw_name is not None and not bound:
                 log.warning(
                     "hwaccel %r did not bind for this stream (output=%s); "
                     "decoding in software", self._hw_name, frame.format.name,
@@ -1079,8 +1087,9 @@ class HevcDecoder:
         # _try_hwaccel labels the context with the REQUESTED hwaccel, but the
         # accel only binds in get_format. e.g. DXVA2/D3D11VA are never offered
         # for HEVC 4:4:4, so on Windows Apple's stream silently decodes in
-        # software through a context still labelled "d3d11va". Re-verify from
-        # the first real frame's pixel format (see _publish_frame).
+        # software through a context still labelled "d3d11va". Re-verify on
+        # the first real frame: `is_hwaccel` where PyAV has it, else the
+        # frame's pixel format (see _publish_frame).
         self._hw_verified = False
         self._reformatter[0] = None
         self._seen_fmts.clear()
