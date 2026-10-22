@@ -1,5 +1,6 @@
 ﻿# Native tools write progress to stderr; Windows PowerShell 5.1 would treat that as
 # fatal under 'Stop'. Every native call below checks $LASTEXITCODE instead.
+param([string]$DistDir = 'dist')
 $ErrorActionPreference = 'Continue'
 Set-Location (Split-Path $PSScriptRoot -Parent) -ErrorAction Stop
 if (-not (Test-Path '.venv/Scripts/python.exe')) {
@@ -14,10 +15,10 @@ if ($LASTEXITCODE -ne 0) { throw 'Dependency installation failed' }
 if ($LASTEXITCODE -ne 0) { throw 'Icon generation failed' }
 & .venv/Scripts/python.exe -m pytest
 if ($LASTEXITCODE -ne 0) { throw 'Tests failed' }
-& .venv/Scripts/python.exe -m PyInstaller --noconfirm packaging/iShareScreen-Desktop.spec
+& .venv/Scripts/python.exe -m PyInstaller --noconfirm --distpath $DistDir packaging/iShareScreen-Desktop.spec
 if ($LASTEXITCODE -ne 0) { throw 'Executable build failed' }
-& .venv/Scripts/python.exe -m PyInstaller --noconfirm packaging/iShareScreen-LiquidGlass.spec
+& .venv/Scripts/python.exe -m PyInstaller --noconfirm --distpath $DistDir packaging/iShareScreen-LiquidGlass.spec
 if ($LASTEXITCODE -ne 0) { throw 'Liquid Glass executable build failed' }
-Copy-Item -LiteralPath dist/iShareScreen-Desktop.exe -Destination dist/iShareScreen.exe -Force -ErrorAction Stop
-Write-Output 'Built dist/iShareScreen-Desktop.exe (also dist/iShareScreen.exe) and dist/iShareScreen-LiquidGlass.exe'
+Copy-Item -LiteralPath (Join-Path $DistDir 'iShareScreen-Desktop.exe') -Destination (Join-Path $DistDir 'iShareScreen.exe') -Force -ErrorAction Stop
+Write-Output "Built Desktop, LiquidGlass and iShareScreen.exe in $DistDir"
 

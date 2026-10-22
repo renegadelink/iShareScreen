@@ -85,10 +85,11 @@ class EditSystemDialog(QDialog):
         self.mode = QComboBox(); self.mode.setObjectName('bare'); self.mode.setAccessibleName('Screen Sharing Type')
         self.mode.addItem(MODE_LABELS['standard'], 'standard')
         self.mode.addItem(MODE_LABELS['high_performance'], 'high_performance')
+        self.mode.addItem(MODE_LABELS['rvdp'], 'rvdp')
         if not hp_enabled:
             self.mode.model().item(1).setEnabled(False)
             self.mode.setItemData(1, hp_note or 'High Performance is not available.', Qt.ItemDataRole.ToolTipRole)
-        self.mode.setCurrentIndex(1 if system.mode == 'high_performance' else 0)   # a saved HP choice stays visible
+        self.mode.setCurrentIndex(max(0, self.mode.findData(system.mode)))
         self.resolution = QComboBox(); self.resolution.setObjectName('bare'); self.resolution.setAccessibleName('Resolution')
         for value, text in RESOLUTIONS:
             self.resolution.addItem(text, value)
@@ -100,6 +101,13 @@ class EditSystemDialog(QDialog):
         self.view = QComboBox(); self.view.setObjectName('bare'); self.view.setAccessibleName('Viewing')
         self.view.addItem('Fit to window', 'fit'); self.view.addItem('Actual size', 'actual')
         self.view.setCurrentIndex(1 if system.view == 'actual' else 0)
+        def protocol_fields():
+            rvdp = self.mode.currentData() == 'rvdp'
+            self.port.setEnabled(not rvdp)
+            self.user.setEnabled(not rvdp)
+            self.port.setToolTip('For RVDP, include the port in the WebSocket URL.' if rvdp else '')
+        self.mode.currentIndexChanged.connect(protocol_fields)
+        protocol_fields()
 
         box, inner = _section(); _row(label('Name', 'Name'), self.name, inner, True); layout.addWidget(box)
         self.sections.append(box)
@@ -177,7 +185,11 @@ class EditSystemDialog(QDialog):
 
     def accept(self):
         try:
-            host, port = resolve_address(self.address.text(), self.port.text())
+            if self.mode.currentData() == 'rvdp':
+                from ...protocols.rvdp.client import endpoint
+                host, port = endpoint(self.address.text())
+            else:
+                host, port = resolve_address(self.address.text(), self.port.text())
         except ValueError as error:
             self.error.setText('✕ ' + str(error))
             self.address.setFocus()

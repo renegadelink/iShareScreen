@@ -19,6 +19,8 @@ from .hp import HPController, RESOLUTIONS
 from .icons import glyph
 from .library import SavedSystem, MODE_LABELS
 from .session import SessionController, close_socket
+from .rvdp import RVDPController
+from ...protocols.rvdp.client import endpoint
 from .theme import fade_in, is_glass, label
 from .widgets import paint_backdrop, push_button, reveal, surface, tool_button
 
@@ -118,7 +120,7 @@ class ConnectionWizard(QWidget):
         self._saved_mode = prefill.mode if prefill else 'standard'
         self._auto_check = auto_check or bool(prefill)
         if prefill:
-            host, user = format_address(prefill.host, prefill.port), prefill.user
+            host, user = prefill.address, prefill.user
         self._build(prefill)
         self.address.setText(host)
         self.username.setText(user)
@@ -172,6 +174,12 @@ class ConnectionWizard(QWidget):
         self.address.returnPressed.connect(self.check_address)
         row.addWidget(self.address, 1)
         layout.addLayout(row)
+        self.protocol_choice = QComboBox()
+        self.protocol_choice.setAccessibleName('Connection protocol')
+        self.protocol_choice.addItem('Standard VNC / macOS Screen Sharing', 'vnc')
+        self.protocol_choice.addItem('routeOS virtual HMI (RVDP)', 'rvdp')
+        self.protocol_choice.setCurrentIndex(1 if self._saved_mode == 'rvdp' else 0)
+        layout.addWidget(self.protocol_choice)
         self.address_status = QLabel(); self.address_status.setWordWrap(True)
         self.address_status.setAccessibleName('Connection check result')
         layout.addWidget(self.address_status)
@@ -390,6 +398,38 @@ class ConnectionWizard(QWidget):
     def check_address(self):
         if self.is_checking or self.stack.currentIndex() != self.ADDRESS:
             return
+        text = self.address.text().strip()
+        if self.protocol_choice.currentData() == 'rvdp' and not text.startswith(('ws://', 'wss://')):
+            text = f'ws://{text}/rvdp'
+            self.address.setText(text)
+        if text.startswith(('ws://', 'wss://')):
+            try:
+                url, port = endpoint(text)
+            except ValueError as error:
+                _status(self.address_status, str(error), 'error')
+                self._fit()
+                return
+            self.verified = ProbeResult(url, port, '1.0', url, (), 'none')
+            self.message.setText('Connect to routeOS')
+            self.instruction.setVisible(False)
+            self.found_label.setText('The display is verified when its first complete screen arrives.')
+            for widget in (self.account_box, self.username_label, self.password_box, self.password_label, self.remember):
+                widget.hide()
+            self.auth_note.setText('Lab connection. Control needs permission from both this viewer and the device.')
+            self.auth_note.show()
+            index = self.mode.findData('rvdp')
+            if index < 0:
+                self.mode.addItem(MODE_LABELS['rvdp'], 'rvdp')
+                index = self.mode.findData('rvdp')
+            self.mode.setCurrentIndex(index)
+            self.mode.setEnabled(False)
+            self.connect_button.setText('Connect')
+            if not hasattr(self, 'rvdp_control'):
+                self.rvdp_control = QCheckBox('Request pointer + keyboard control (lab only)')
+                self.stack.widget(self.CREDENTIALS).layout().insertWidget(2, self.rvdp_control)
+            self.rvdp_control.show()
+            self.go(self.CREDENTIALS)
+            return
         try:
             host, port = parse_address(self.address.text())
         except ValueError as error:
@@ -428,6 +468,13 @@ class ConnectionWizard(QWidget):
             return
         self._end_check()
         self.verified = result
+        self.mode.setEnabled(True)
+        rvdp_index = self.mode.findData('rvdp')
+        if rvdp_index >= 0:
+            self.mode.removeItem(rvdp_index)
+        if hasattr(self, 'rvdp_control'):
+            self.rvdp_control.hide()
+        self.auth_note.setText('This computer does not ask for a password.')
         self.continue_button.setText('Connect')
         _status(self.address_status)
         shown = format_address(result.host, result.port)
@@ -493,9 +540,12 @@ class ConnectionWizard(QWidget):
         self.connect_button.setEnabled(False)
         self._pending_secret = secret
         who = f'{user} on ' if user else ''
-        self.connecting_target.setText(f'{who}{format_address(verified.host, verified.port)}')
+        shown = verified.host if self.mode.currentData() == 'rvdp' else format_address(verified.host, verified.port)
+        self.connecting_target.setText(f'{who}{shown}')
         self.phase.setText('Starting…')
-        if self.mode.currentData() == 'high_performance' and auth == 'account':
+        if self.mode.currentData() == 'rvdp':
+            controller = RVDPController(verified.host, request_control=self.rvdp_control.isChecked())
+        elif self.mode.currentData() == 'high_performance' and auth == 'account':
             controller = HPController(verified.host, verified.port, user, secret, auth=auth,
                                       resolution=self.resolution.currentData())
         else:

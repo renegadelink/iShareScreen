@@ -23,6 +23,7 @@ from .library_window import LibraryWindow
 from .session import SessionWindow, Screen, SessionController, shutdown_all   # Screen re-exported for compatibility
 from .theme import apply_theme
 from .wizard import ConnectionWizard, WizardResult
+from .rvdp import RVDPSessionWindow
 
 __all__ = ['AppController', 'Screen', 'main']
 
@@ -186,7 +187,8 @@ class AppController(QObject):
         elif result.remember:
             problems.append('The password was not saved either.')
         title = saved.title if saved else (result.name or format_address(result.host, result.port))
-        window = SessionWindow(controller, title, view=result.view)
+        window_class = RVDPSessionWindow if result.mode == 'rvdp' else SessionWindow
+        window = window_class(controller, title, view=result.view)
         window.system_id = saved.id if saved else None
         window.saved_secret = lambda w=window: self.saved_secret(w.system_id)   # lets Reconnect skip the prompt
         window.closed.connect(self.on_session_closed)
@@ -338,6 +340,8 @@ def main(argv=None):
             import importlib
             importlib.import_module('isharescreen.proxy.session')
             importlib.import_module('av')
+            importlib.import_module('isharescreen.frontend.desktop.rvdp')
+            importlib.import_module('aiohttp')
         except Exception as error:
             print(f'smoke test: High Performance dependencies are missing: {type(error).__name__}: {error}', file=sys.stderr)
             return 3

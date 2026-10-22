@@ -24,8 +24,8 @@ from ...tui.storage import state_dir
 log = logging.getLogger("iss.desktop.library")
 
 SCHEMA_VERSION = 1
-MODES = ('standard', 'high_performance')
-MODE_LABELS = {'standard': 'Standard', 'high_performance': 'High Performance'}
+MODES = ('standard', 'high_performance', 'rvdp')
+MODE_LABELS = {'standard': 'Standard', 'high_performance': 'High Performance', 'rvdp': 'routeOS (RVDP)'}
 VIEWS = ('fit', 'actual')
 
 
@@ -61,7 +61,7 @@ class SavedSystem:
 
     @property
     def address(self) -> str:
-        return format_address(self.host, self.port)
+        return self.host if self.mode == 'rvdp' else format_address(self.host, self.port)
 
     @property
     def identity(self) -> tuple:

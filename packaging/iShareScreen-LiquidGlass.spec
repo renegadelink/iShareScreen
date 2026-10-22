@@ -6,7 +6,7 @@ a = Analysis([str(root/'packaging/glass_launcher.py')],pathex=[str(root/'src')],
     hiddenimports=[],
     # PyAV stays in: the experimental High Performance path decodes with it.
     excludes=['tkinter','PyQt5','PyQt6','PySide6.QtWebEngineCore','PySide6.QtWebEngineWidgets',
-              'PySide6.QtQml','PySide6.QtQuick','pytest','wgpu','glfw','aioquic','aiohttp'])
+              'PySide6.QtQml','PySide6.QtQuick','pytest','wgpu','glfw','aioquic'])
 pyz=PYZ(a.pure)
 exe=EXE(pyz,a.scripts,a.binaries,a.datas,[],name='iShareScreen-LiquidGlass',
     debug=False,strip=False,upx=False,console=False,icon=str(root/'packaging/isharescreen.ico'))

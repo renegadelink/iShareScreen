@@ -8,6 +8,12 @@ Sharing: a library window of saved computers, small "Connect To:" and sign-in
 dialogs, and one window per remote desktop. It opens no browser and no HTTP
 server. See the top-level README for the flow.
 
+For a running installed copy, build new RVDP-capable binaries in a separate folder:
+`./packaging/build.ps1 -DistDir dist/rvdp`, then
+`.venv/Scripts/python.exe packaging/check_exe.py --dist-dir dist/rvdp`.
+The Desktop and Liquid Glass specs include `aiohttp` for RVDP. Do not overwrite a
+running executable. Existing VNC behavior and the default output folder stay the same.
+
 Enable Screen Sharing on the Mac under System Settings → General → Sharing. The
 default (Standard) mode uses Apple Remote Desktop authentication (RFB security
 type 30) and raw/zlib framebuffer rectangles over TCP 5900, with no UDP, virtual

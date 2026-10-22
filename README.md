@@ -1,5 +1,48 @@
 # iShareScreen Desktop
 
+## routeOS virtual HMI (development)
+
+This checkout also supports **RVDP 1.0 / 1.1** devices alongside the existing VNC
+connections. Choose **routeOS virtual HMI (RVDP)** in Connect To, or enter a
+`ws://device-ip:81/rvdp` URL. For the routeOS host simulator, use
+`ws://127.0.0.1:8095/rvdp`. The first complete screen must arrive before a session
+is saved. Fit, zoom, refresh, reconnect, and the connection library are shared.
+
+Sessions start view-only. Request pointer + keyboard control explicitly when connecting;
+the device must grant it. RVDP 1.1 also supports physical keyboard input when the device advertises it
+and grants control. Click the display to focus typing; Orbit uses Enter to
+calculate, Tab to change pages, and Escape to return to the calculator.
+RVDP has no clipboard, audio or Mac shortcuts.
+Plain WebSocket is for an isolated development LAN; customer deployments require
+authenticated WSS or a secured gateway. `wss://` keeps certificate verification.
+URLs containing credentials, query tokens, or fragments are rejected rather than
+persisted. Reconnect uses the existing window action with a fresh handshake/full
+snapshot. Build both updated Desktop and Liquid Glass executables with
+`./packaging/build.ps1 -DistDir dist/orbit`; output is local and not tracked in Git.
+
+The RFB engine is unchanged. RVDP lives in `protocols/rvdp/` with a separate Qt
+controller in `frontend/desktop/rvdp.py`. Run `python -m pytest tests/test_rvdp.py`
+for protocol and real-window tests; run the full suite before rebuilding binaries.
+
+![iShareScreen Liquid Glass displaying a live EEZ-generated LVGL interface from a physical ESP32 over RVDP](docs/screenshots/rvdp-routeos-hardware.png)
+
+*Physical ESP32 output (240×135), received by the actual native session window;
+captured through Qt offscreen on 22 October 2026. Unlike the Mac screenshots below,
+this screen is live device-rendered pixels, not a drawn stand-in.*
+
+<p align="center">
+  <img src="docs/screenshots/rvdp-routeos-history.png" alt="iShareScreen showing the ESP32 calculator history" width="49%">
+  <img src="docs/screenshots/rvdp-routeos-notes.png" alt="iShareScreen showing the ESP32 scratchpad and on-screen keyboard" width="49%">
+</p>
+
+The Orbit UI includes a 20-button calculator, reusable history, and a scratchpad.
+It is a real EEZ Studio LVGL export running on the ESP32. These native window
+captures receive live hardware pixels through Qt's offscreen platform.
+The firmware, editable EEZ project and protocol specification are in
+[routeOS](https://github.com/pointlessduffin-21/routeOS/tree/main/virtual-hmi).
+
+---
+
 A native Windows client for macOS Screen Sharing (Intel and Apple Silicon Macs),
 laid out like the Screen Sharing app on a Mac: a library of your computers, small
 connect and sign-in dialogs, and a window per remote desktop with a symbol toolbar.
