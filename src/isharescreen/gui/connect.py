@@ -281,28 +281,25 @@ def _launch(values: dict) -> None:
             cmd += ["--advertise", advertise]
     else:
         cmd += ["--hidpi", scale]
+    auto_chroma = None
     decoder = values.get("decoder", "auto").strip()
     if decoder and decoder != "auto":
         cmd += ["--decoder", decoder]        # explicit pin — session honours it
     elif frontend == "desktop" and "ISS_VIDEO_CODEC" not in os.environ:
-        # "Auto" on the desktop frontend: the GUI already probed hardware at
-        # startup, so pin the DECODER here → the session skips its decoder-build
-        # probe (and "hevc444 probe: unavailable" log noise) at stream start.
-        # Only pass --codec for AVC: that matches what the cli already forces on
-        # a non-HEVC box (where the probe noise actually is), and it lets the
-        # session skip resolve_codec too. For HEVC we deliberately do NOT pass
-        # --codec — forcing it would change the media offer from the default
-        # "both"-bank (byte-identical to Apple's) to a single-HEVC bank
-        # (offers.py DANGER note); the session resolves the codec itself
-        # (cheap on a HEVC-capable box). Skipped if the user set ISS_VIDEO_CODEC.
+        # Reuse the GUI's cached hardware probes to pin the child decoder.
+        # Preserve the native both-bank 4:4:4 offer; 4:2:0 needs an explicit
+        # HEVC-only offer and matching chroma in the child's environment.
         try:
-            from isharescreen.proxy.media.registry import resolve_codec, select
-            codec = resolve_codec("auto")
-            spec = select(codec)
+            from isharescreen.proxy.media.registry import resolve_video_format, select
+            codec, chroma = resolve_video_format("auto")
+            spec = select(codec, chroma=chroma)
             if spec is not None:
                 cmd += ["--decoder", spec.name]
                 if codec == "avc":
                     cmd += ["--codec", "avc"]
+                elif chroma == "420":
+                    cmd += ["--codec", "hevc"]
+                    auto_chroma = "420"
         except Exception:
             pass  # fall back to the session's own auto resolution
     if values.get("curtain") != "on":
@@ -313,6 +310,8 @@ def _launch(values: dict) -> None:
         cmd.append("--trust-cert-for-safari")
 
     env = dict(os.environ)
+    if auto_chroma is not None:
+        env["ISS_HEVC_CHROMA"] = auto_chroma
     if _GUI_PORT:
         # iss POSTs here (blocking) to ask share-vs-alt when a different user is
         # at the console; the /session-choice handler answers from the modal.
@@ -377,7 +376,7 @@ _FORM = """<!doctype html><html><head><title>iShareScreen — Connect</title>__H
   <label>User</label><input type="text" name="user" placeholder="macOS account" value="__USER__">
   <label>Password</label><input type="password" name="password" placeholder="password">
   <label>Frontend</label>
-  <select name="frontend"><option value="browser" __BROWSER_SEL__>browser (WebTransport + WebCodecs)</option><option value="desktop" __DESKTOP_SEL__>desktop (native window)</option></select>
+  <select name="frontend"><option value="browser" __BROWSER_SEL__>browser (H.264)</option><option value="desktop" __DESKTOP_SEL__>desktop (native window, H.264 / HEVC)</option></select>
   <label>Resolution</label>
   <select name="advertise" title="The encoded pixel resolution = how much bandwidth you use. Higher = sharper + more bandwidth. UI size is set separately by Display scale.">
    <option value="auto" selected>Auto — track window size</option>
@@ -578,6 +577,7 @@ _DASH = """<!doctype html><html><head><title>iShareScreen — Diagnostics</title
 # decoders SUPPORTED ON THIS CLIENT PLATFORM (via the registry), so e.g.
 # VideoToolbox never shows on Windows/Linux and Intel QSV never shows on macOS.
 _DECODER_LABELS = {
+    "libav-hevc420":    "HEVC 4:2:0 — GPU with CPU fallback",
     "vt-hevc444":       "HEVC — VideoToolbox (Mac GPU)",
     "libav-hevc444":    "HEVC — Generic GPU (d3d11va / vaapi / cuda)",
     "qsv-hevc444":      "HEVC — Intel Quick Sync",
@@ -662,6 +662,8 @@ def _form_page() -> bytes:
             host = getattr(last, "host", "") or ""
             user = getattr(last, "user", "") or ""
             frontend = getattr(last, "frontend", "browser") or "browser"
+    if os.environ.get("ISS_VIDEO_CODEC", "").lower() == "hevc":
+        frontend = "desktop"
     import html as _html
     return (_FORM
             .replace("__HEAD__", _HEAD)

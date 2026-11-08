@@ -183,7 +183,7 @@ def _make_parser() -> argparse.ArgumentParser:
         "--codec", choices=["auto", "hevc", "avc"], default="auto",
         help=(
             "video codec: 'auto' (default) probes GPU capability and picks "
-            "HEVC 4:4:4 when available, else H.264 4:2:0; 'hevc' forces "
+            "hardware HEVC 4:4:4, then HEVC 4:2:0, then H.264; 'hevc' forces "
             "HEVC; 'avc' forces H.264 (hardware-decodable on Windows/Linux "
             "where 4:4:4 isn't)"
         ),
@@ -459,16 +459,16 @@ def _run_frontend(config: SessionConfig, args: argparse.Namespace) -> int:
     WebCodecs, H.264 pass-through) since every machine has a browser; the
     native wgpu/desktop viewer stays available via --frontend desktop."""
     if args.frontend == "desktop":
-        # Auto codec ladder: offer HEVC when this machine has a HEVC 4:4:4
-        # hardware decoder (VideoToolbox / generic HW / QSV), else fall back to
-        # H.264 (libav-avc420, HW with SW floor). Only force AVC here — when
-        # HEVC HW is present we leave ISS_VIDEO_CODEC unset so the proven
-        # "both"-bank offer (Apple-byte-identical → server sends HEVC) is
-        # unchanged. An explicit --codec / --decoder still wins (env already set).
+        # Preserve the native both-bank offer for hardware 4:4:4. Hardware
+        # 4:2:0 needs the constrained HEVC offer; otherwise use H.264.
         if args.codec == "auto" and "ISS_VIDEO_CODEC" not in os.environ:
-            from .proxy.media.registry import resolve_codec
-            if resolve_codec("auto") == "avc":
+            from .proxy.media.registry import resolve_video_format
+            codec, chroma = resolve_video_format("auto")
+            if codec == "avc":
                 os.environ["ISS_VIDEO_CODEC"] = "avc"
+            elif chroma == "420":
+                os.environ["ISS_VIDEO_CODEC"] = "hevc"
+                os.environ["ISS_HEVC_CHROMA"] = "420"
         from isharescreen.frontend.desktop.app import run as run_desktop
         # --display: default (omitted) auto-opens one window per host monitor if
         # the host has more than one; a single-monitor host stays one window with
@@ -497,6 +497,8 @@ def _run_frontend(config: SessionConfig, args: argparse.Namespace) -> int:
     # Session reads ISS_VIDEO_CODEC at construction, so force it unless the
     # user explicitly chose a codec.
     if args.codec == "auto":
+        if os.environ.get("ISS_VIDEO_CODEC", "").lower() == "hevc":
+            log.warning("browser frontend uses H.264; select the Desktop frontend to try HEVC")
         os.environ["ISS_VIDEO_CODEC"] = "avc"
     # Use the cursor pseudo-encoding (RFB enc 1104), same as the wgpu viewer:
     # the daemon does NOT bake the cursor into the framebuffer, it sends cursor

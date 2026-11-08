@@ -47,6 +47,7 @@ from .media.avc_nalu import (
     APPLE_CONFIG_MARKER, parse_avc_config, reassemble_h264,
 )
 from .media.registry import resolve_codec
+from .video_formats import hevc_chroma
 from .media.quality_gate import TileVisState
 from .. import __version__ as _iss_version
 from .control import ControlServer
@@ -73,7 +74,6 @@ from .protocol.srtp import (
     SRTCPDecryptor,
     SRTCPEncryptor,
     SRTPDecryptor,
-    SRTPEncryptor,
 )
 
 
@@ -178,11 +178,6 @@ _AVC_RTP_REPAIR_WAIT_S = 0.075
 # re-feeding duplicate NALUs into the decoder. 2 s is comfortably wider
 # than any reasonable RTP retransmit window.
 _FLUSHED_DEDUP_TTL_S = 2.0
-
-# PT=101 keepalive payload — opaque-but-required handshake bytes.
-# Empirically: any 4-byte payload works as long as it's sent at the
-# negotiated SSRC. Apple's own client sends the same constant.
-_HEARTBEAT_PAYLOAD = bytes.fromhex("00683400")
 
 # Apple HP audio stream format on the wire.
 _AUDIO_PT = 101
@@ -380,7 +375,7 @@ class Session:
         # Cipher state for the TX channel.
         self._video_decryptor: Optional[SRTPDecryptor] = None
         self._audio_decryptor: Optional[SRTPDecryptor] = None
-        self._audio_encryptor: Optional[SRTPEncryptor] = None
+        self._audio_srtcp_enc: Optional[SRTCPEncryptor] = None
         self._srtcp_dec: Optional[SRTCPDecryptor] = None
         self._srtcp_enc: Optional[SRTCPEncryptor] = None
         self._our_video_ssrc: Optional[int] = None
@@ -1205,7 +1200,7 @@ class Session:
             # the generic libav d3d11va-RExt / Intel QSV paths on Windows/Linux.
             # ISS_FORCE_SW_HEVC=1 pins the libav software path.
             _pf = prefer_hwaccel
-            _override = ("libav-hevc444" if not prefer_hwaccel
+            _override = (registry.normalize_override("libav", "hevc") if not prefer_hwaccel
                          else registry.normalize_override(_decoder_choice, "hevc"))
 
         _spec, self._decoder = registry.build_best(
@@ -1362,13 +1357,20 @@ class Session:
         cw = self._negotiation.canvas_width if self._negotiation else 0
         ch = self._negotiation.canvas_height if self._negotiation else 0
         pkts = last_starved.packets if last_starved else 0
+        if pkts:
+            raise RuntimeError(
+                f"HP stream received {pkts} video packets on the last of "
+                f"{_BURST_RETRY_ATTEMPTS} handshakes, but could not recover complete "
+                f"codec parameter sets. Inspect the CODEC-DETECT and packet-framing "
+                f"logs; this is not a zero-packet transport failure."
+            )
         raise RuntimeError(
-            f"HP stream never started: {pkts} HEVC video packets arrived across "
-            f"{_BURST_RETRY_ATTEMPTS} fresh handshakes. The host accepted a "
-            f"{cw}x{ch} encoder canvas over IPv4, but screensharingd never sent "
-            f"any RTP -- a host-side stall. On the Mac, toggle Screen Sharing "
-            f"off/on in System Settings (clears a wedged agent), then reconnect; "
-            f"--no-curtain (mirror the physical screen) can also help."
+            f"HP stream never started: {pkts} video packets received across "
+            f"{_BURST_RETRY_ATTEMPTS} fresh handshakes. The server reported a "
+            f"{cw}x{ch} canvas over IPv4, but no video RTP reached this viewer. "
+            f"Possible causes include an unsupported media offer, encoder startup "
+            f"failure, or UDP delivery failure. Check the video-answer payload "
+            f"and pixel-format logs before treating this as a host-side stall."
         )
 
     def _negotiate_and_burst(self, cfg) -> InitialBurst:
@@ -1421,10 +1423,7 @@ class Session:
         self._audio_decryptor = SRTPDecryptor.from_blob(keys.audio_key_s)
         self._srtcp_dec = SRTCPDecryptor.from_blob(keys.video_key_s)
         self._srtcp_enc = SRTCPEncryptor.from_blob(keys.video_key_v)
-        if self._our_audio_ssrc is not None:
-            self._audio_encryptor = SRTPEncryptor.from_blob(
-                keys.audio_key_v, self._our_audio_ssrc,
-            )
+        self._audio_srtcp_enc = SRTCPEncryptor.from_blob(keys.audio_key_v)
 
         # Drain the start burst. On starvation we deliberately do NOT poke
         # the host with an FBU here -- a FramebufferUpdateRequest during the
@@ -1437,8 +1436,15 @@ class Session:
         # are independent slice chains and the burst must gather enough to seed
         # the shared decoder context before the streaming loop starts.
         _is_avc = self._video_codec == "avc"
+        def startup_reports() -> None:
+            self._send_heartbeat()
+            self._send_rr_and_maybe_sr()
+
+        log.info("starting receiver reports before burst: audio UDP %d, video UDP %d",
+                 self._ctrl_dest_port, self._video_dest_port)
         self._drain_socket_into(
-            self._sock_video, burst_buf, max_seconds=4.0 if _is_avc else 2.0)
+            self._sock_video, burst_buf, max_seconds=4.0 if _is_avc else 2.0,
+            on_tick=startup_reports)
         return gather_initial_burst(
             burst_buf, self._video_decryptor, quality_tier=cfg.quality_tier,
             codec=self._video_codec,
@@ -1638,7 +1644,7 @@ class Session:
 
         self._video_decryptor = None
         self._audio_decryptor = None
-        self._audio_encryptor = None
+        self._audio_srtcp_enc = None
         self._srtcp_dec = None
         self._srtcp_enc = None
         self._ssrc_to_tile = {}
@@ -2541,7 +2547,7 @@ class Session:
 
         # The access unit's DONL (decoding-order number) — the LTR ring key
         # the LTRP ack must echo. Same for every NALU in the group.
-        donl = first_donl(ordered) if self._ltr_enabled else None
+        donl = first_donl(ordered) if self._ltr_enabled and self.num_tiles > 1 else None
         # AVC resize: the new geometry's avcC config (0x92) rides the new
         # stream out-of-band; re-root the decoder on it before decoding any
         # new-resolution slices (else: stale-sized context → -12909).
@@ -2556,10 +2562,10 @@ class Session:
                 # The post-layout FIR makes Apple repeat the config/keyframe;
                 # resume only after _maybe_reharvest_avc_config installs it.
                 return
-        _reassemble = reassemble_h264 if self._video_codec == "avc" else reassemble_group
         au_cb = self._video_au_callback if self._video_codec == "avc" else None
 
-        nalus = list(_reassemble(ordered))
+        nalus = (reassemble_h264(ordered) if self._video_codec == "avc"
+                 else reassemble_group(ordered, has_donl=self.num_tiles > 1))
 
         # If a dynamic resolution change is in progress, harvest fresh
         # VPS/SPS/PPS from the new encoder's burst so the restarted
@@ -2935,16 +2941,19 @@ class Session:
                 # NOTE: read the prior restart time BEFORE stamping `now`,
                 # otherwise the gap is always 0 and the restart never fires.
                 last_restart = self._last_decoder_restart_t
+                independent_hevc = (self._video_codec == "hevc"
+                                    and hevc_chroma() == "420" and want == 1)
                 must_restart = (
                     self._video_codec == "avc"
+                    or independent_hevc
                     or now - last_restart >= 3.0
                 )
                 if must_restart:
                     self._last_decoder_restart_t = now
-                    if self._video_codec == "avc":
+                    if self._video_codec == "avc" or independent_hevc:
                         log.info(
-                            "AVC SSRC generation change: resetting decoder "
-                            "DPB before fresh keyframe"
+                            "%s SSRC generation change: resetting decoder "
+                            "DPB before fresh keyframe", self._video_codec.upper()
                         )
                     self._decoder.restart()
                 self.request_fir()
@@ -3979,21 +3988,21 @@ class Session:
             })
 
     def _send_heartbeat(self) -> None:
-        # Apple rtcp-muxes audio onto the same UDP port as control RTCP
-        # (UDP 5900). Send our PT=101 keepalive there, not to a
-        # separate audio port — Apple doesn't listen anywhere else.
+        # This viewer receives audio. Keep that leg alive with an RR using
+        # its own negotiated SSRC/key, rather than unsolicited audio RTP.
         sock = self._sock_ctrl
-        enc = self._audio_encryptor
-        if sock is None or enc is None:
+        enc = self._audio_srtcp_enc
+        sender_ssrc = self._our_audio_ssrc
+        if sock is None or enc is None or sender_ssrc is None:
             return
         try:
-            pkt = enc.encrypt(_HEARTBEAT_PAYLOAD, pt=_AUDIO_PT)
+            pkt = enc.protect(build_rr(sender_ssrc))
             sock.sendto(pkt, (self._dest_host, self._ctrl_dest_port))
         except OSError as e:
             log.debug("heartbeat send failed: %s", e)
 
     def _send_rr_and_maybe_sr(self) -> None:
-        sock = self._sock_ctrl
+        sock = self._sock_video
         enc = self._srtcp_enc
         sender_ssrc = self._our_video_ssrc
         if sock is None or enc is None or sender_ssrc is None:
@@ -4012,7 +4021,7 @@ class Session:
             rr = build_empty_sr(sender_ssrc) + rr
 
         try:
-            sock.sendto(enc.protect(rr), (self._dest_host, self._ctrl_dest_port))
+            sock.sendto(enc.protect(rr), (self._dest_host, self._video_dest_port))
         except OSError as e:
             log.debug("RR/SR send failed: %s", e)
 
@@ -4547,12 +4556,18 @@ class Session:
     @staticmethod
     def _drain_socket_into(
         sock: socket.socket, into: list[bytes], *, max_seconds: float,
+        on_tick: Optional[Callable[[], None]] = None,
     ) -> None:
-        """Pull packets off `sock` for up to `max_seconds`. Used to drain
-        the burst before the rx thread starts."""
+        """Pull the startup burst, keeping negotiated feedback alive while
+        waiting. `on_tick` runs synchronously at most every half second."""
         deadline = time.monotonic() + max_seconds
+        next_report = 0.0
         sock.settimeout(0.05)
         while time.monotonic() < deadline:
+            now = time.monotonic()
+            if on_tick is not None and now >= next_report:
+                on_tick()
+                next_report = now + 0.5
             try:
                 pkt, _ = sock.recvfrom(65536)
             except socket.timeout:

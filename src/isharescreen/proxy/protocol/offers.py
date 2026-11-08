@@ -18,6 +18,7 @@ import zlib
 from typing import Optional
 
 from ... import __version__
+from ..video_formats import hevc_chroma, video_pixel_formats
 
 
 log = logging.getLogger(__name__)
@@ -44,11 +45,12 @@ def tiles_per_frame() -> int:
     decodes cleanly (the same workaround the browser frontend already uses).
     An explicit ISS_TILES_PER_FRAME always wins."""
     codec = _os.environ.get("ISS_VIDEO_CODEC", "").lower()
-    default = "1" if codec == "avc" else "4"
+    single_picture = codec == "avc" or hevc_chroma() == "420"
+    default = "1" if single_picture else "4"
     try:
         return max(1, int(_os.environ.get("ISS_TILES_PER_FRAME", default)))
     except ValueError:
-        return 1 if codec == "avc" else 4
+        return 1 if single_picture else 4
 
 
 # ── protobuf helpers ──────────────────────────────────────────────────
@@ -198,78 +200,90 @@ _AUDIO_F4_ON = 24191
 _AUDIO_F4_OFF = 1000
 
 
+def _build_video_description(mode: int, session_id: int) -> bytes:
+    """Build video settings independently of audio capabilities."""
+    # Codec selection is consulted before building the banks because the
+    # bank that yields AVC uses the HEVC-labelled parameter string (Apple's
+    # response mapping is inverted; see below). LTR therefore has to be
+    # removed from that string as well as from structured field 7.
+    _codec = _os.environ.get("ISS_VIDEO_CODEC", "both").lower()
+    hevc420 = _codec == "hevc" and hevc_chroma() == "420"
+    ltrp_on = _ltrp_enabled_for_codec(_codec)
+    hevc_params = _HEVC_PARAMS_LTR if ltrp_on else _HEVC_PARAMS_NO_LTR
+    res_entry = _field_varint(1, 1) + _field_varint(2, 1) + _field_varint(3, 50115) + _field_varint(4, 0)
+    res_entry_alt = _field_varint(1, 1) + _field_varint(2, 2) + _field_varint(3, 50115) + _field_varint(4, 0)
+    hevc_bank = (
+        _field_varint(1, 123)
+        + _field_bytes(2, res_entry) + _field_bytes(2, res_entry_alt)
+        + _field_bytes(2, res_entry) + _field_bytes(2, res_entry_alt)
+        + _field_bytes(3, hevc_params)
+        + _field_varint(4, 1)
+    )
+    avc_bank = (
+        _field_varint(1, 100)
+        + _field_bytes(2, res_entry) + _field_bytes(2, res_entry_alt)
+        + _field_bytes(3, _AVC_PARAMS.replace(b"AR:", b"SW:0;AR:", 1)
+                       if hevc420 else _AVC_PARAMS)
+        + _field_varint(4, 14)
+    )
+    # VideoSettings fields (per CoreDevice media-stream-offer RE):
+    #   2 = allowRTCPFB, 6 = tilesPerFrame, 7 = ltrpEnabled.
+    # tilesPerFrame: macOS HONORS this — we request 4, so the server tiles
+    # the screen into 4 horizontal H.264 sub-streams (which a native ffmpeg
+    # decoder handles but browser WebCodecs can't, due to cross-tile
+    # references). ISS_TILES_PER_FRAME=1 requests a SINGLE picture per frame
+    # — decodable by any standard decoder. (iOS CoreDevice defaults to 1.)
+    _tiles_per_frame = tiles_per_frame()
+    if _codec == "hevc":
+        log.info("HEVC offer: chroma=%s pixel-format bitmap=0x%x tiles=%d mode=%d",
+                 hevc_chroma(), video_pixel_formats(), _tiles_per_frame, mode)
+    # Codec selection. Default "both" is byte-identical to Apple's native
+    # offer (HEVC 4:4:4 + the H.264 4:2:0 fallback bank). ISS_VIDEO_CODEC=avc
+    # advertises ONLY the H.264 bank (codec const 100 = H.264 per the GFT
+    # plist) so the server sends H.264 4:2:0 — which hardware-decodes on the
+    # GPUs that can't HW-decode HEVC 4:4:4. This is a TEST gate: confirm the
+    # server actually switches codecs (NAL types in the profile snapshot)
+    # before wiring a real H.264 decode path. ISS_VIDEO_CODEC=hevc forces
+    # HEVC-only.
+    # DANGER — the bank variables are named for the PARAMS they carry, but
+    # the server's response is INVERTED from that. Live testing PROVED:
+    #   hevc_bank (field1=123, HEVC params) → server sends H.264 4:2:0
+    #   avc_bank  (field1=100, AVC params)  → server sends HEVC 4:4:4
+    # So selecting "the bank named for the codec you want" is WRONG and
+    # was the 84f475e regression (AVC request → HEVC stream → burst starved).
+    # Select by OUTPUT via these aliases; do NOT collapse them back to the
+    # name-matching form.
+    bank_yields_h264 = hevc_bank   # field1=123
+    bank_yields_hevc = avc_bank    # field1=100
+    if _codec == "avc":
+        _codec_banks = _field_bytes(3, bank_yields_h264)
+    elif _codec == "hevc":
+        _codec_banks = _field_bytes(3, bank_yields_hevc)
+    else:
+        # "both" = Apple's byte-identical order (123 then 100); server picks
+        # its preferred (HEVC 4:4:4) — the default native path.
+        _codec_banks = _field_bytes(3, hevc_bank) + _field_bytes(3, avc_bank)
+    desc = (
+        _field_varint(1, session_id) + _field_varint(2, 0 if hevc420 else int(ltrp_on))
+        + _codec_banks
+        + _field_varint(6, _tiles_per_frame) + _field_varint(7, 1 if ltrp_on else 0)
+        + _field_varint(8, 63 if _codec == "avc" else video_pixel_formats())
+        + _field_varint(9, 1) + _field_varint(12, 1)
+    )
+    return desc
+
+
 def _build_mediablob(
     mode: int, session_id: int, timestamp: int, *, audio_enabled: bool = True,
 ) -> bytes:
-    """Build the MediaBlob protobuf. mode 7 = video, mode 8 = audio. Output
+    """Build the MediaBlob protobuf. modes 7/9 = video, mode 8 = audio. Output
     matches Apple's createOffer modulo the dynamic fields. `audio_enabled`
-    only affects mode 8: when False, the audio-stream gate (field4) is set
-    below the server's tier floor so no audio is transmitted."""
+    only affects mode 8: when False, field4 uses an empirically silent mask.
+    The flag-to-codec mapping is not yet established."""
     if mode == 7:
-        # Codec selection is consulted before building the banks because the
-        # bank that yields AVC uses the HEVC-labelled parameter string (Apple's
-        # response mapping is inverted; see below). LTR therefore has to be
-        # removed from that string as well as from structured field 7.
-        _codec = _os.environ.get("ISS_VIDEO_CODEC", "both").lower()
-        ltrp_on = _ltrp_enabled_for_codec(_codec)
-        hevc_params = _HEVC_PARAMS_LTR if ltrp_on else _HEVC_PARAMS_NO_LTR
-        res_entry = _field_varint(1, 1) + _field_varint(2, 1) + _field_varint(3, 50115) + _field_varint(4, 0)
-        res_entry_alt = _field_varint(1, 1) + _field_varint(2, 2) + _field_varint(3, 50115) + _field_varint(4, 0)
-        hevc_bank = (
-            _field_varint(1, 123)
-            + _field_bytes(2, res_entry) + _field_bytes(2, res_entry_alt)
-            + _field_bytes(2, res_entry) + _field_bytes(2, res_entry_alt)
-            + _field_bytes(3, hevc_params)
-            + _field_varint(4, 1)
-        )
-        avc_bank = (
-            _field_varint(1, 100)
-            + _field_bytes(2, res_entry) + _field_bytes(2, res_entry_alt)
-            + _field_bytes(3, _AVC_PARAMS)
-            + _field_varint(4, 14)
-        )
-        # VideoSettings fields (per CoreDevice media-stream-offer RE):
-        #   2 = allowRTCPFB, 6 = tilesPerFrame, 7 = ltrpEnabled.
-        # tilesPerFrame: macOS HONORS this — we request 4, so the server tiles
-        # the screen into 4 horizontal H.264 sub-streams (which a native ffmpeg
-        # decoder handles but browser WebCodecs can't, due to cross-tile
-        # references). ISS_TILES_PER_FRAME=1 requests a SINGLE picture per frame
-        # — decodable by any standard decoder. (iOS CoreDevice defaults to 1.)
-        _tiles_per_frame = tiles_per_frame()
-        # Codec selection. Default "both" is byte-identical to Apple's native
-        # offer (HEVC 4:4:4 + the H.264 4:2:0 fallback bank). ISS_VIDEO_CODEC=avc
-        # advertises ONLY the H.264 bank (codec const 100 = H.264 per the GFT
-        # plist) so the server sends H.264 4:2:0 — which hardware-decodes on the
-        # GPUs that can't HW-decode HEVC 4:4:4. This is a TEST gate: confirm the
-        # server actually switches codecs (NAL types in the profile snapshot)
-        # before wiring a real H.264 decode path. ISS_VIDEO_CODEC=hevc forces
-        # HEVC-only.
-        # DANGER — the bank variables are named for the PARAMS they carry, but
-        # the server's response is INVERTED from that. Live testing PROVED:
-        #   hevc_bank (field1=123, HEVC params) → server sends H.264 4:2:0
-        #   avc_bank  (field1=100, AVC params)  → server sends HEVC 4:4:4
-        # So selecting "the bank named for the codec you want" is WRONG and
-        # was the 84f475e regression (AVC request → HEVC stream → burst starved).
-        # Select by OUTPUT via these aliases; do NOT collapse them back to the
-        # name-matching form.
-        bank_yields_h264 = hevc_bank   # field1=123
-        bank_yields_hevc = avc_bank    # field1=100
-        if _codec == "avc":
-            _codec_banks = _field_bytes(3, bank_yields_h264)
-        elif _codec == "hevc":
-            _codec_banks = _field_bytes(3, bank_yields_hevc)
-        else:
-            # "both" = Apple's byte-identical order (123 then 100); server picks
-            # its preferred (HEVC 4:4:4) — the default native path.
-            _codec_banks = _field_bytes(3, hevc_bank) + _field_bytes(3, avc_bank)
-        desc = (
-            _field_varint(1, session_id) + _field_varint(2, 1 if ltrp_on else 0)
-            + _codec_banks
-            + _field_varint(6, _tiles_per_frame) + _field_varint(7, 1 if ltrp_on else 0)
-            + _field_varint(8, 63)
-            + _field_varint(9, 1) + _field_varint(12, 1)
-        )
-        desc_field = _field_bytes(5, desc)
+        desc_field = _field_bytes(5, _build_video_description(mode, session_id))
+    elif mode == 9:
+        desc_field = _field_bytes(5, _build_video_description(mode, session_id))
     elif mode == 8:
         # field4 is the viewer's requested audio bitrate — Apple's
         # `preferredMediaBitRate` (reversed from AVConference). The host parses
@@ -296,12 +310,20 @@ def _build_mediablob(
     else:
         raise ValueError(f"unsupported negotiation mode {mode}")
 
+    bandwidth_tiers = _APPLE_AUDIO_F9
+    if mode == 9:
+        # Nearby's arbiter looks for bit 12 (4096), not the RemoteDesktop
+        # connection marker (12288). Its documented maximum is 40 Mbit/s.
+        bandwidth_tiers = b"".join(
+            _build_audio_f9_entry(kind, bitrate, 4096 if cap == 12288 else cap)
+            for kind, bitrate, cap in _AUDIO_F9_TIERS
+        )
     return (
         _field_varint(1, 1) + _field_varint(2, 1)
         + desc_field
         + _field_bytes(6, f"iShareScreen {__version__}".encode("ascii"))
         + _field_varint(8, 0)
-        + _APPLE_AUDIO_F9
+        + bandwidth_tiers
         + _field_varint(13, timestamp)
         + _field_varint(14, 2) + _field_varint(16, 0) + _field_varint(18, 1)
     )
@@ -324,9 +346,13 @@ def create_offers(*, audio_enabled: bool = True) -> tuple[bytes, bytes]:
             "avcMediaStreamNegotiatorMediaBlob": zlib.compress(blob),
             "avcMediaStreamOptionCallID": str(uuid.uuid4()).upper(),
         }
+        if mode == 9:
+            plist["avcMediaStreamNegotiatorDirection"] = 2
         return plistlib.dumps(plist, fmt=plistlib.FMT_BINARY)
 
-    return _plist(7), _plist(8)
+    nearby = (_os.environ.get("ISS_VIDEO_CODEC", "").lower() == "hevc"
+              and hevc_chroma() == "420" and tiles_per_frame() == 1)
+    return _plist(9 if nearby else 7), _plist(8)
 
 
 # ── answer parsing ────────────────────────────────────────────────────
@@ -402,6 +428,8 @@ def extract_canvas_dims(answer_msg: bytes) -> tuple[int, int, int]:
             idx += 6
             continue
         cw = ch = ct = 0
+        selected_payloads = []
+        selected_formats = None
         pos = 0
         while pos < len(dec):
             tag, pos = _read_varint(dec, pos)
@@ -430,8 +458,16 @@ def extract_canvas_dims(answer_msg: bytes) -> tuple[int, int, int]:
                                 # field 7 = ltrpEnabled (negotiated result).
                                 # Diagnostic: did the server accept LTRP?
                                 log.info("negotiated ltrpEnabled (answer F5.f7) = %d", v)
+                            elif sf == 8:
+                                selected_formats = v
                         elif sw == 2:
                             sl, sp = _read_varint(sub, sp)
+                            if sf == 3 and sl:
+                                payload = sub[sp:sp + sl]
+                                pt_tag, pp = _read_varint(payload, 0)
+                                if pt_tag == 8 and pp < len(payload):
+                                    pt, _ = _read_varint(payload, pp)
+                                    selected_payloads.append(pt)
                             sp += sl
                         elif sw == 1:
                             sp += 8
@@ -447,6 +483,9 @@ def extract_canvas_dims(answer_msg: bytes) -> tuple[int, int, int]:
             else:
                 break
         if cw and ch:
+            log.info("video answer: canvas=%dx%d tiles=%d payloads=%s pixel-format bitmap=%s",
+                     cw, ch, ct, selected_payloads,
+                     "missing" if selected_formats is None else hex(selected_formats))
             return cw, ch, ct
         idx += 6
 

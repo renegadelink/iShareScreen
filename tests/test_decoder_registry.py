@@ -39,6 +39,8 @@ def test_candidates_platform_filtered_and_sorted(monkeypatch):
 
 def test_windows_prefers_generic_then_qsv(monkeypatch):
     monkeypatch.setattr(R.sys, "platform", "win32")
+    from isharescreen.proxy.media import hwcaps
+    monkeypatch.setattr(hwcaps, "supports_hevc420_hwdecode", lambda: False)
 
     monkeypatch.setattr(R, "_hevc444_method", lambda: "libav")
     assert R.select("hevc").name == "libav-hevc444"     # generic wins when it works

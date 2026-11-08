@@ -76,6 +76,8 @@ def gather_initial_burst(
     """Drain `udp_video_buf` into NAL units. Returns parameter sets, the per-
     tile NAL cache, and any incomplete groups for the streaming loop."""
     deadline = time.time() + deadline_seconds
+    from .offers import tiles_per_frame
+    has_donl = tiles_per_frame() > 1
     while len(udp_video_buf) < min_packets and time.time() < deadline:
         time.sleep(0.05)
     time.sleep(settle_seconds)
@@ -107,6 +109,22 @@ def gather_initial_burst(
 
     nonlocal_state = {"vps": vps_nalu, "sps": sps_nalu}
 
+    def _harvest_hevc_params(nalu: bytes) -> bool:
+        if len(nalu) < 2:
+            return False
+        nt = (nalu[0] >> 1) & 0x3f
+        if nt == NAL_VPS:
+            nonlocal_state["vps"] = nalu
+        elif nt == NAL_SPS:
+            nonlocal_state["sps"] = nalu
+        elif nt == NAL_PPS:
+            rbsp = remove_emulation_prevention(nalu[2:])
+            pps_id = BitReader(rbsp).read_ue()
+            all_pps[pps_id] = nalu
+        else:
+            return False
+        return True
+
     def _scan_new() -> None:
         nonlocal processed
         snap = list(udp_video_buf)
@@ -115,6 +133,7 @@ def gather_initial_burst(
             if not pair:
                 continue
             hdr, payload = pair
+            nonlocal_state.setdefault("payload_types", set()).add(hdr[1] & 0x7f)
             ssrc = struct.unpack(">I", hdr[8:12])[0]
             seq = struct.unpack(">H", hdr[2:4])[0]
             ts = struct.unpack(">I", hdr[4:8])[0]
@@ -130,6 +149,14 @@ def gather_initial_burst(
             if key in completed:
                 continue
             grp = ssrc_ts_groups[key]
+            if codec == "hevc" and key[0] in ssrc_to_tile:
+                # Parameter sets in AP/single-NAL packets are complete even
+                # when their timestamp group has no frame-end marker. Do not
+                # make startup depend on that group also containing a picture.
+                param_packets = [p for _, _, p in grp if len(p) >= 2
+                                 and ((p[0] >> 1) & 0x3f) in (32, 33, 34, 48)]
+                for nalu in reassemble_group(param_packets, has_donl=has_donl):
+                    _harvest_hevc_params(nalu)
             if not any(m for _, m, _ in grp):
                 continue
             ssrc, _ts = key
@@ -171,20 +198,14 @@ def gather_initial_burst(
                         tile_nalus[ti].append(nalu)
                 completed.add(key)
                 continue
-            for nalu in reassemble_group([p for _, _, p in packets]):
+            for nalu in reassemble_group([p for _, _, p in packets], has_donl=has_donl):
                 if len(nalu) < 2:
                     continue
                 nt = (nalu[0] >> 1) & 0x3F
                 nonlocal_state.setdefault("hdr_bytes", set()).add(nalu[0])
-                if nt == NAL_VPS:
-                    nonlocal_state["vps"] = nalu
-                elif nt == NAL_SPS:
-                    nonlocal_state["sps"] = nalu
-                elif nt == NAL_PPS:
-                    rbsp = remove_emulation_prevention(nalu[2:])
-                    pps_id = BitReader(rbsp).read_ue()
-                    all_pps[pps_id] = nalu
-                elif nt in IDR_RANGE:
+                if _harvest_hevc_params(nalu):
+                    continue
+                if nt in IDR_RANGE:
                     last_idr[ti] = nalu
                     tile_nalus[ti] = [nalu]
                 else:
@@ -226,10 +247,18 @@ def gather_initial_burst(
     if _has_hevc_fu and not _has_hevc_params and not _has_hevc_ap and not _is_h264 and codec == "avc":
         _is_hevc = False
         _is_h264 = True
+    _pts = nonlocal_state.get("payload_types", set())
+    if _pts == {100}:
+        _is_hevc, _is_h264 = True, False
+    elif _pts and _pts <= {123, 126}:
+        _is_hevc, _is_h264 = False, True
+    elif _has_hevc_ap or _has_hevc_params:
+        _is_h264 = False
     log.info(
-        "CODEC-DETECT: raw RTP headers=%s -> %s",
+        "CODEC-DETECT: raw RTP headers=%s -> %s (payload types=%s, DONL=%s)",
         sorted(hex(b) for b in _raw),
         "H.264/AVC" if _is_h264 else "HEVC" if _is_hevc else "unknown",
+        sorted(_pts), has_donl if codec == "hevc" else False,
     )
 
     vps_out = nonlocal_state["vps"]
@@ -238,7 +267,7 @@ def gather_initial_burst(
     missing_params = (sps_out is None or not all_pps) if codec == "avc" else (
         vps_out is None or sps_out is None or not all_pps)
     if missing_params:
-        reason = "no-video-rtp" if len(udp_video_buf) < 20 else "missing-param-sets"
+        reason = "no-video-rtp" if not udp_video_buf else "missing-param-sets"
         raise BurstStarved(len(udp_video_buf), reason, deadline_seconds)
 
     log.info("PPS pool: %d", len(all_pps))
