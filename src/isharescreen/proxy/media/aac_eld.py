@@ -1,6 +1,6 @@
-"""AAC-ELD-SBR 48 kHz stereo decoder for Apple's PT=101 audio.
+"""AAC-ELD and ELD-SBR 48 kHz stereo decoders for Apple's PT=101 audio.
 
-Two backends, picked by platform:
+Backends, picked by platform or explicit override:
 
   - **AudioToolbox** (`_AudioToolboxBackend`) — macOS, via direct ctypes.
     Ships with the OS, lowest latency, zero extra install.
@@ -10,20 +10,21 @@ Two backends, picked by platform:
     `dnf install fdk-aac` (Fedora), or
     `libfdk-aac-2.dll` on Windows.
 
-We deliberately don't fall back to PyAV. libavcodec 62 has **no native
-AAC-ELD decoder** (`aac` / `aac_fixed` / `aac_latm` all return
-`PatchWelcomeError` when AOT-39 extradata is supplied), and standard
-PyAV PyPI wheels don't ship `libfdk_aac` for licensing reasons. The only
-PyAV codec that handles AAC-ELD-SBR is `aac_at`, which is just
-AudioToolbox in a wrapper — strictly worse than calling AudioToolbox
-ourselves.
+  - **PyAV** (`_PyAvEldBackend`) — default on Windows and Linux.
+    Uses the existing PyAV dependency to decode plain AAC-ELD at 48 kHz.
+    Audible playback was confirmed with a macOS 27.2 host and Windows viewer.
+    It leaves the audio offer unchanged and requires no extra DLL.
 
-Apple's PT=101 wire format is one raw AAC-ELD-SBR access unit per RTP
-packet. No RFC 3640 AU-headers, no RED framing. Silence AUs are 4
-bytes of zeros. 480 frames per packet, which under SBR maps to 20 ms
-of perceived audio.
+PyAV's native AAC decoder accepts plain ELD but rejects our ELD-SBR
+configuration. The PyAV backend uses the plain-ELD config from
+open-screen-sharing. FDK remains a fallback if PyAV cannot initialize,
+and `AAC_BACKEND=fdk` explicitly selects it for other host configurations.
 
-Both backends return `(N, 2)` float32 stereo at 48 kHz, or `None` on
+Apple's PT=101 wire format is one raw access unit per RTP packet, without
+RFC 3640 AU-headers or RED framing. The verified plain-ELD path produces
+480 samples per packet at 48 kHz (10 ms).
+
+All backends return `(N, 2)` float32 stereo at 48 kHz, or `None` on
 decode failure / first-call priming where the decoder has nothing to
 emit yet.
 """
@@ -498,20 +499,64 @@ class _LibFdkBackend:
             pass
 
 
+class _PyAvEldBackend:
+    """Plain AAC-ELD decoder using the already installed PyAV."""
+
+    def __init__(self) -> None:
+        import av
+
+        self._av = av
+        self._errors = 0
+        self._reported_output = False
+        self._codec = av.CodecContext.create("aac", "r")
+        self._codec.extradata = bytes.fromhex("f8e65000")
+        self._codec.sample_rate = OUTPUT_SAMPLE_RATE
+        self._codec.open()
+        self._resampler = av.AudioResampler(format="fltp", layout="stereo",
+                                           rate=OUTPUT_SAMPLE_RATE)
+        log.info("PyAV plain AAC-ELD decoder enabled: 48000 Hz stereo; audio offer unchanged")
+
+    def decode(self, payload: bytes) -> Optional[np.ndarray]:
+        if not payload or self._codec is None:
+            return None
+        try:
+            output = []
+            for frame in self._codec.decode(self._av.Packet(payload)):
+                for pcm in self._resampler.resample(frame):
+                    output.append(pcm.to_ndarray().T)
+            if output:
+                pcm = np.ascontiguousarray(np.concatenate(output), dtype=np.float32)
+                if not self._reported_output:
+                    log.info("PyAV plain ELD: decoded first PCM block "
+                             "(%d samples, 48000 Hz stereo)", len(pcm))
+                    self._reported_output = True
+                return pcm
+        except self._av.error.FFmpegError as exc:
+            self._errors += 1
+            if self._errors == 1 or self._errors % 100 == 0:
+                log.warning("PyAV plain ELD decode failed (%d): %s",
+                            self._errors, exc)
+        return None
+
+    def close(self) -> None:
+        self._codec = None
+        self._resampler = None
+
+
 # ── factory ──────────────────────────────────────────────────────────
 
 # Backend identifiers accepted by `make_aac_eld_decoder(prefer=...)` and
-# the `AAC_BACKEND` env var. CLI flag `--aac-backend` should be wired to
-# pass `prefer=` directly.
+# the `AAC_BACKEND` env var.
 BACKEND_AUDIOTOOLBOX = "audiotoolbox"
 BACKEND_FDK = "fdk"
-_VALID_BACKENDS = frozenset({BACKEND_AUDIOTOOLBOX, BACKEND_FDK})
+BACKEND_PYAV_ELD = "pyav-eld"
+_VALID_BACKENDS = frozenset({BACKEND_AUDIOTOOLBOX, BACKEND_FDK, BACKEND_PYAV_ELD})
 
 # Per-platform install instructions for the libfdk-aac runtime, included
 # in the runtime error if it can't be loaded. Keep these accurate to what
 # users actually have to do.
 _LIBFDK_INSTALL_HELP = """\
-libfdk-aac is required for audio on Linux and Windows.
+libfdk-aac is an alternative to the built-in PyAV audio backend.
 Install one of:
   Debian/Ubuntu:  sudo apt install libfdk-aac2
   Fedora/RHEL:    sudo dnf install fdk-aac
@@ -539,23 +584,20 @@ def _make_libfdk() -> AacEldDecoder:
 
 
 def make_aac_eld_decoder(prefer: Optional[str] = None) -> Optional[AacEldDecoder]:
-    """Return the best available AAC-ELD-SBR decoder, or `None` when no
+    """Return the best available AAC-ELD decoder, or `None` when no
     backend is reachable. Callers treat `None` as "audio disabled" — the
     session continues with video-only.
 
     Resolution order:
-      1. Explicit `prefer=` argument (typically from a `--aac-backend` CLI flag).
+      1. Explicit `prefer=` argument.
          If forced and the backend can't be built, raises so the user
          sees their explicit choice failed.
       2. `AAC_BACKEND` env var (back-compat).
-      3. Platform default — AudioToolbox on Darwin, libfdk-aac elsewhere.
-         On Linux/Windows, libfdk-aac is *optional*: AudioToolbox is
-         macOS-only and FFmpeg's native AAC bails on AOT 39 with
-         `PatchWelcomeError`, so libfdk-aac is the only viable decoder
-         for those platforms today. It's GPL-licensed and not
-         redistributable in our wheel; logging a warning and returning
-         None lets the rest of the stream survive instead of
-         hard-failing the whole session.
+      3. Platform default — AudioToolbox on Darwin, PyAV elsewhere.
+         If the default cannot initialize, try libfdk-aac. If neither
+         backend initializes, log a warning and let video continue.
+         Fallback is decided at initialization; per-packet decode errors
+         do not trigger a backend switch.
     """
     forced = prefer or os.environ.get("AAC_BACKEND", "")
     forced = forced.lower().strip() or None
@@ -568,6 +610,8 @@ def make_aac_eld_decoder(prefer: Optional[str] = None) -> Optional[AacEldDecoder
         return _AudioToolboxBackend()
     if forced == BACKEND_FDK:
         return _make_libfdk()
+    if forced == BACKEND_PYAV_ELD:
+        return _PyAvEldBackend()
 
     # Platform default.
     if sys.platform == "darwin":
@@ -579,7 +623,13 @@ def make_aac_eld_decoder(prefer: Optional[str] = None) -> Optional[AacEldDecoder
                 e,
             )
 
-    # Linux / Windows / non-Darwin fall-through: libfdk-aac is optional.
+    if sys.platform != "darwin":
+        try:
+            return _PyAvEldBackend()
+        except Exception as e:
+            log.warning("PyAV AAC-ELD unavailable (%s); falling through to libfdk-aac", e)
+
+    # The platform default failed; libfdk-aac is optional.
     try:
         return _LibFdkBackend()
     except Exception as e:
@@ -595,6 +645,7 @@ __all__ = [
     "AacEldDecoder",
     "BACKEND_AUDIOTOOLBOX",
     "BACKEND_FDK",
+    "BACKEND_PYAV_ELD",
     "MAGIC_COOKIE",
     "OUTPUT_CHANNELS",
     "OUTPUT_SAMPLE_RATE",
