@@ -190,10 +190,8 @@ _REMOTE_ENDPOINT_INFO = _build_remote_endpoint_info()
 
 # ── offer construction ───────────────────────────────────────────────
 
-# Audio-description field4 gate values (see the mode-8 branch below for the
-# full RE note). Apple's default 24191 selects the single system-audio tier;
-# a sub-floor value makes the server send no audio, which is how --no-audio
-# turns audio off on the wire.
+# Audio F3.f4 appears to be payloadFlags, not a bitrate. Keep the captured
+# default and the empirically silent --no-audio value pending codec-bit mapping.
 _AUDIO_F4_ON = 24191
 _AUDIO_F4_OFF = 1000
 
@@ -203,8 +201,8 @@ def _build_mediablob(
 ) -> bytes:
     """Build the MediaBlob protobuf. mode 7 = video, mode 8 = audio. Output
     matches Apple's createOffer modulo the dynamic fields. `audio_enabled`
-    only affects mode 8: when False, the audio-stream gate (field4) is set
-    below the server's tier floor so no audio is transmitted."""
+    only affects mode 8: when False, field4 uses an empirically silent mask.
+    The flag-to-codec mapping is not yet established."""
     if mode == 7:
         # Codec selection is consulted before building the banks because the
         # bank that yields AVC uses the HEVC-labelled parameter string (Apple's
@@ -271,22 +269,21 @@ def _build_mediablob(
         )
         desc_field = _field_bytes(5, desc)
     elif mode == 8:
-        # field4 is the viewer's requested audio bitrate — Apple's
-        # `preferredMediaBitRate` (reversed from AVConference). The host parses
-        # it into the negotiated AVCAudioStreamConfig and feeds it to
-        # `VCAudioTierPicker tierForAudioBitrate:`, which selects an AAC-ELD
-        # tier. For screen-share system audio there is effectively ONE tier
-        # (~21 kbps), so any value above its floor gives a flat 21 kbps (Apple's
-        # own client sends 24191); this is NOT a proportional bitrate. But a
-        # value BELOW the tier floor makes the picker find "no corresponding
-        # tier" and the host sends no audio (~0.4 kbps residual). A live sweep
-        # put the floor at ~5 kbps (<=4000 = off, >=6000 = on). This is the only
-        # negotiated audio knob: the audio section is mandatory (omitting it
-        # degenerates negotiation) and screen-share audio has no direction/enable
-        # field, so honoring --no-audio means requesting a sub-floor bitrate.
-        # ISS_AUDIO_F4 overrides for testing.
+        # Independent RE names F4 payloadFlags and F5 secondaryFlags. Apple's
+        # VCMediaNegotiationBlobAudioSettings exposes both properties. Earlier
+        # "bitrate floor" experiments changed flag bits too and cannot prove
+        # a bitrate interpretation or that AAC-ELD is the only available codec.
+        # Preserve known working values; ISS_AUDIO_F4 is experimental (decimal
+        # or 0x-prefixed hex). It does not change our AAC-ELD decoder.
         _default_f4 = _AUDIO_F4_ON if audio_enabled else _AUDIO_F4_OFF
-        _af4 = int(_os.environ.get("ISS_AUDIO_F4", str(_default_f4)))
+        raw_f4 = _os.environ.get("ISS_AUDIO_F4", str(_default_f4))
+        try:
+            _af4 = int(raw_f4, 16 if raw_f4.lower().startswith("0x") else 10)
+            if not 0 <= _af4 <= 0xffffffff:
+                raise ValueError
+        except ValueError:
+            raise ValueError("ISS_AUDIO_F4 must be an unsigned 32-bit decimal or hex value") from None
+        log.info("audio offer: F3.f4=0x%x F3.f5=0x0 (capability mapping provisional)", _af4)
         desc = (
             _field_varint(1, session_id) + _field_varint(2, 0)
             + _field_varint(3, 0) + _field_varint(4, _af4)
@@ -383,7 +380,7 @@ def extract_canvas_dims(answer_msg: bytes) -> tuple[int, int, int]:
         if idx < 0:
             return 0, 0, 0
         plist_obj = None
-        for end in range(idx + 1, len(answer_msg) + 1, 2):
+        for end in range(idx + 1, len(answer_msg) + 1):
             try:
                 plist_obj = plistlib.loads(answer_msg[idx:end])
                 break
@@ -401,6 +398,13 @@ def extract_canvas_dims(answer_msg: bytes) -> tuple[int, int, int]:
         except Exception:
             idx += 6
             continue
+        from .audio_negotiation import audio_answer_fields
+
+        audio = audio_answer_fields(dec)
+        if audio is not None:
+            log.info("audio answer: %s (capability mapping provisional)",
+                     " ".join(f"F3.f{n}=0x{v:x}" for n, v in sorted(audio.items())
+                              if n != 1))
         cw = ch = ct = 0
         pos = 0
         while pos < len(dec):

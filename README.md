@@ -33,9 +33,10 @@ available.
    pip install git+https://github.com/renegadelink/iShareScreen.git
    ```
 
-3. (Optional, only if you want audio) install **libfdk-aac** — Apple's
-   PT=101 audio uses AAC-ELD-SBR, which Windows Media Foundation can't
-   decode. The cleanest source is [MSYS2](https://www.msys2.org):
+3. Audio uses the included PyAV plain AAC-ELD decoder automatically, without
+   an environment variable or another DLL. Audible playback was confirmed
+   with a macOS 27.2 host. If PyAV cannot initialize, the client tries
+   **libfdk-aac**, available through [MSYS2](https://www.msys2.org):
    ```sh
    pacman -Sy --noconfirm mingw-w64-x86_64-fdk-aac
    ```
@@ -43,8 +44,10 @@ available.
    searches automatically. If you already have [scoop](https://scoop.sh),
    `scoop install msys2` followed by the same `pacman` command also
    works — iss looks under `%USERPROFILE%\scoop\apps\msys2\current\mingw64\bin`
-   too. Without libfdk-aac, video works as normal and audio is silently
-   skipped.
+   too. Without a usable audio decoder, video continues and a warning is logged.
+   To select FDK explicitly for a different host configuration, set
+   `$env:AAC_BACKEND = 'fdk'` before launching from the same PowerShell window.
+   See [audio configuration and negotiation notes](docs/audio-negotiation.md).
 
 #### Linux (Debian / Ubuntu)
 
@@ -58,8 +61,9 @@ available.
        libportaudio2 libfdk-aac2 \
        xclip
    ```
-   `libfdk-aac2` is only used for audio; if you skip it, video still
-   works and audio is silently disabled.
+   `libfdk-aac2` is optional: audio tries the included PyAV decoder first,
+   then FDK if PyAV cannot initialize. The PyAV path was verified on Windows
+   against macOS 27.2. Video works without an audio decoder.
 
    `xclip` enables bidirectional clipboard sync with the macOS host. On
    Wayland desktops use `wl-clipboard` instead. If neither is installed
