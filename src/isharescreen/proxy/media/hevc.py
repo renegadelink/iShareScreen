@@ -49,6 +49,7 @@ import av
 
 from .tiles import TileFrame
 from .nalu import IDR_RANGE
+from ..video_formats import hevc_chroma
 from .quality_gate import FrameQualityGate, TileVisState
 from .decode_common import (
     _NAL_START_CODE,
@@ -177,6 +178,10 @@ class HevcDecoder:
             raise ValueError("num_tiles must be positive")
         self.num_tiles = num_tiles
         self._prefer_hwaccel = prefer_hwaccel
+        # PyAV may download genuine HW output into normal nv12 frames. For
+        # the 4:2:0 path, prohibit libav's silent software fallback so
+        # successful output proves HW decoding even after that download.
+        self._hw_no_fallback = hevc_chroma() == "420"
         self._on_frame_published = on_frame_published
 
         self._codec: Optional[av.codec.context.CodecContext] = None
@@ -749,12 +754,16 @@ class HevcDecoder:
         if not self._hw_verified:
             self._hw_verified = True
             if (self._hw_name is not None
+                    and not self._hw_no_fallback
                     and frame.format.name not in _HW_FRAME_FORMATS):
                 log.warning(
                     "hwaccel %r did not bind for this stream (output=%s); "
                     "decoding in software", self._hw_name, frame.format.name,
                 )
                 self._hw_name = None
+            elif self._hw_name is not None and self._hw_no_fallback:
+                log.info("HEVC hardware decode confirmed: %s (output=%s)",
+                         self._hw_name, frame.format.name)
 
         ti = self._pts_to_tile.pop(frame.pts, None)
         submit_t = self._pts_submit_t.pop(frame.pts, None)
@@ -1031,9 +1040,16 @@ class HevcDecoder:
         try:
             from av.codec.hwaccel import HWAccel
 
-            hw = HWAccel(device_type=hw_type)
+            hw = (HWAccel(device_type=hw_type, allow_software_fallback=False)
+                  if self._hw_no_fallback else HWAccel(device_type=hw_type))
             c = av.CodecContext.create("hevc", "r", hwaccel=hw)
             c.extradata = extradata
+            if self._hw_no_fallback:
+                # D3D11VA's fixed pool needs room for references and frames
+                # in flight. The default 20-surface pool exhausted in the
+                # live HEVC 4:2:0 trial during an encoder generation change.
+                c.options = {"extra_hw_frames": "32"}
+                log.info("HEVC %s: requesting 32 extra hardware frames", hw_type)
             # SLICE threading (parallelise within a frame), all cores.
             # On Windows, DXVA2/D3D11VA cannot decode HEVC 4:4:4 (FFmpeg's
             # hevc get_format never offers them for YUV444P), so this "HW"

@@ -1,12 +1,14 @@
 """HEVC NAL reassembly from Apple's RTP payload format.
 
-Apple deviates from RFC 7798 in two places:
+Apple's multi-tile mode carries decoding-order fields:
   - Aggregation Packets (type 48) have a 2-byte DONL once after the NAL
     header, with **no** DOND between sub-NALUs.
   - Fragmentation Units (type 49) carry a 2-byte DONL **inside every
     fragment**, not just the start fragment.
   - Single NALUs ride with a 2-byte DONL prefix that must be stripped
     before handing the NALU to a decoder.
+
+Single-picture streams omit these fields; callers pass `has_donl=False`.
 """
 from __future__ import annotations
 
@@ -25,7 +27,7 @@ NAL_FRAGMENTATION = 49
 IDR_RANGE = range(16, 22)
 
 
-def reassemble_group(payloads: Iterable[bytes]) -> list[bytes]:
+def reassemble_group(payloads: Iterable[bytes], *, has_donl: bool = True) -> list[bytes]:
     """Turn the RTP payloads belonging to one timestamp group into clean
     NALUs. Handles AP, FU, and single-NAL packets with Apple's DONL
     conventions. Drops malformed entries silently — UDP loss makes that
@@ -33,6 +35,7 @@ def reassemble_group(payloads: Iterable[bytes]) -> list[bytes]:
     out: list[bytes] = []
     fu_buf = bytearray()
     fu_active = False
+    donl_size = 2 if has_donl else 0
 
     for pay in payloads:
         if len(pay) < 2:
@@ -41,7 +44,7 @@ def reassemble_group(payloads: Iterable[bytes]) -> list[bytes]:
 
         if nt == NAL_AGGREGATION:
             # header(2) + DONL(2) + [size(2) + data]...
-            pos = 4
+            pos = 2 + donl_size
             n = len(pay)
             while pos + 2 <= n:
                 size = struct.unpack(">H", pay[pos:pos + 2])[0]
@@ -53,7 +56,8 @@ def reassemble_group(payloads: Iterable[bytes]) -> list[bytes]:
 
         elif nt == NAL_FRAGMENTATION:
             # header(2) + FU_hdr(1) + DONL(2) + payload
-            if len(pay) < 6:
+            body_start = 3 + donl_size
+            if len(pay) <= body_start:
                 continue
             fu_hdr = pay[2]
             start = bool(fu_hdr & 0x80)
@@ -63,19 +67,19 @@ def reassemble_group(payloads: Iterable[bytes]) -> list[bytes]:
                 # Reconstruct the inner NAL header from the FU NAL header.
                 hdr0 = (pay[0] & 0x81) | (inner_type << 1)
                 fu_buf = bytearray([hdr0, pay[1]])
-                fu_buf += pay[5:]
+                fu_buf += pay[body_start:]
                 fu_active = True
             elif fu_active:
-                fu_buf += pay[5:]
-                if end:
-                    out.append(bytes(fu_buf))
-                    fu_active = False
+                fu_buf += pay[body_start:]
+            if fu_active and end:
+                out.append(bytes(fu_buf))
+                fu_active = False
 
         else:
             # Single NAL with leading 2-byte DONL.
-            if len(pay) < 4:
+            if len(pay) < 2 + donl_size:
                 continue
-            out.append(bytes(pay[:2]) + bytes(pay[4:]))
+            out.append(bytes(pay[:2]) + bytes(pay[2 + donl_size:]))
 
     return out
 

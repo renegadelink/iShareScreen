@@ -73,6 +73,7 @@ class HevcSpsState:
     separate_colour_plane_flag: bool = False
     pic_width_in_luma_samples: int = 0
     pic_height_in_luma_samples: int = 0
+    chroma_format_idc: int = 0
     log2_min_luma_coding_block_size_minus3: int = 0
     log2_diff_max_min_luma_coding_block_size: int = 0
 
@@ -185,6 +186,7 @@ def parse_sps(rbsp: bytes) -> HevcSpsState:
 
     sps_seq_parameter_set_id = br.read_ue()  # noqa: F841
     chroma_format_idc = br.read_ue()
+    state.chroma_format_idc = chroma_format_idc
     if chroma_format_idc == 3:
         state.separate_colour_plane_flag = bool(br.read1())
     state.pic_width_in_luma_samples = br.read_ue()
@@ -368,13 +370,14 @@ class HevcRpsTracker:
             self.sps = parse_sps(stripped)
             log.info(
                 "hevc_rps: SPS log2_max_poc_lsb=%d pic=%dx%d num_st_rps=%d "
-                "long_term_present=%s num_lt_sps=%d",
+                "long_term_present=%s num_lt_sps=%d chroma_format_idc=%d",
                 self.sps.log2_max_pic_order_cnt_lsb,
                 self.sps.pic_width_in_luma_samples,
                 self.sps.pic_height_in_luma_samples,
                 self.sps.num_short_term_ref_pic_sets,
                 self.sps.long_term_ref_pics_present_flag,
                 self.sps.num_long_term_ref_pics_sps,
+                self.sps.chroma_format_idc,
             )
         except Exception as e:
             log.warning("hevc_rps: SPS parse failed: %s", e)

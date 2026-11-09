@@ -1,36 +1,22 @@
-"""GPU capability probe for HEVC 4:4:4 hardware decode + codec auto-selection.
+"""Cached HEVC hardware decode probes for codec and chroma auto-selection.
 
-Apple's screen-share default video codec is HEVC RExt 4:4:4, which only recent
-GPUs hardware-decode (AMD RDNA3+, Intel Arc / 12th-gen+, NVIDIA Ada+); on the
-rest, libav silently falls back to CPU decode, which is far too slow for a live
-4-tile stream. H.264 4:2:0 (the AVC codec bank, see offers.py) hardware-decodes
-on virtually every GPU (D3D11VA on Windows, VAAPI on Linux, VideoToolbox on
-macOS). `--codec auto` (the default) resolves to HEVC 4:4:4 when the GPU can
-hardware-decode it and to H.264 4:2:0 otherwise.
-
-Detection is a *real* hardware decode of a tiny embedded HEVC 4:4:4 IDR through
-the same libav hwaccel path production uses. If the decoded frame comes back in
-a hardware pixel format the GPU supports it; if libav fell back to software
-(frame format `yuv444p`) or the hwaccel failed to initialise, it does not. This
-tests the actual decode path rather than trusting a static profile table, so it
-can't be fooled by a profile GUID that's advertised but broken.
+Decode tiny packaged 4:4:4 and 4:2:0 IDRs through the production libav
+hardware backends with software fallback disabled. Successful output
+confirms the basic decode path, including NV12 frames downloaded by PyAV;
+it does not establish throughput or support at every resolution.
 """
 from __future__ import annotations
 
 import logging
+from importlib.resources import files
 import os
 import sys
 
 log = logging.getLogger(__name__)
 
-# A 64x64 HEVC Main 4:4:4 8-bit IDR access unit (VPS + SPS + PPS + IDR slice,
-# Annex-B), produced by libx265 from a yuv444p frame. Self-contained: it
-# decodes with a fresh decoder context, no external parameter sets. ~97 bytes.
-_HEVC444_SAMPLE = bytes.fromhex(
-    "0000000140010c01ffff0408000003009e280000030000baba0240000000014201"
-    "010408000003009e280000030000ba90041020b2dd25261734040000030004003d"
-    "090020000000014401c070306011200000012801ade0d117ffd39173238b80"
-)
+# Tiny self-contained IDRs; see samples/README.md for their purpose and format.
+_HEVC444_SAMPLE = files(__package__).joinpath("samples/hevc444-idr.hevc").read_bytes()
+_HEVC420_SAMPLE = files(__package__).joinpath("samples/hevc420-idr.hevc").read_bytes()
 
 # Per-platform hwaccel candidates to probe, in priority order — mirrors the
 # decoder's own list in hevc.py so the probe tests what production would use.
@@ -43,8 +29,8 @@ _PROBE_HWACCELS: dict[str, tuple[str, ...]] = {
 _cache: dict[str, bool] = {}
 
 
-def _probe_one(hwaccel_type: str) -> bool:
-    """True iff `hwaccel_type` hardware-decodes the embedded HEVC 4:4:4 sample.
+def _probe_one(hwaccel_type: str, *, chroma: str = "444") -> bool:
+    """True iff `hwaccel_type` hardware-decodes the requested HEVC sample.
 
     Uses `allow_software_fallback=False` so libav will NOT silently decode in
     software when the GPU lacks the profile: a produced frame then means the
@@ -60,20 +46,29 @@ def _probe_one(hwaccel_type: str) -> bool:
         except TypeError:
             # Older PyAV without the kwarg can't distinguish HW from a SW
             # fallback here; be conservative and report unsupported (→ AVC).
-            log.info("hevc444 probe (%s): PyAV lacks allow_software_fallback; "
-                     "assuming no HW 4:4:4", hwaccel_type)
+            log.info("hevc%s probe (%s): PyAV lacks allow_software_fallback; "
+                     "assuming no HW support", chroma, hwaccel_type)
             return False
         ctx = av.CodecContext.create("hevc", "r", hwaccel=hw)
-        frames = list(ctx.decode(av.Packet(_HEVC444_SAMPLE)))
+        sample = _HEVC420_SAMPLE if chroma == "420" else _HEVC444_SAMPLE
+        frames = list(ctx.decode(av.Packet(sample)))
         frames += list(ctx.decode(None))  # flush
         ok = bool(frames)
-        log.info("hevc444 probe (%s): %s%s", hwaccel_type,
+        log.info("hevc%s probe (%s): %s%s", chroma, hwaccel_type,
                  "HW-decoded" if ok else "no HW frame",
                  (" (fmt=%s)" % frames[0].format.name) if frames else "")
         return ok
     except Exception as e:
-        log.info("hevc444 probe (%s): unavailable (%s)", hwaccel_type, e)
+        log.info("hevc%s probe (%s): unavailable (%s)", chroma, hwaccel_type, e)
         return False
+
+
+def supports_hevc420_hwdecode() -> bool:
+    """Cached real hardware decode probe; software fallback never counts."""
+    if "420" not in _cache:
+        hwaccels = _PROBE_HWACCELS.get(sys.platform, _PROBE_HWACCELS["*"])
+        _cache["420"] = any(_probe_one(h, chroma="420") for h in hwaccels)
+    return _cache["420"]
 
 
 _method_cache: dict[str, str] = {}
@@ -122,15 +117,14 @@ def supports_hevc444_hwdecode() -> bool:
     Cached for the process lifetime (the answer can't change without new
     hardware).
 
-    `ISS_HEVC444=0`/`1` overrides the probe (force AVC fallback / force HEVC) —
+    `ISS_HEVC444=0`/`1` disables / forces the 4:4:4 probe result —
     an escape hatch for a misbehaving probe and for testing the fallback path
     on 4:4:4-capable hardware."""
     return hevc444_decode_method() is not None
 
 
 # NOTE: codec resolution (`--codec auto` -> hevc/avc) moved to
-# media/registry.py::resolve_codec, which asks the decoder registry whether any
-# 4:4:4 decoder is available rather than probing here directly. hwcaps remains
-# the probe provider (the registry's availability callbacks delegate to it).
+# media/registry.py::resolve_video_format. This module supplies hardware probes;
+# the registry chooses the codec and chroma, and frontends apply that choice.
 
-__all__ = ["supports_hevc444_hwdecode", "hevc444_decode_method"]
+__all__ = ["supports_hevc444_hwdecode", "supports_hevc420_hwdecode", "hevc444_decode_method"]

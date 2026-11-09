@@ -9,8 +9,8 @@ selector filters to the negotiated codec, sorts hardware-before-software then by
 priority, and returns the first spec whose `available()` probe passes. Two knobs
 sit on top:
 
-  * codec negotiation — `resolve_codec("auto")` offers HEVC when a hardware
-    4:4:4 decoder is available here, else AVC 4:2:0 (`can_decode`).
+  * codec negotiation — `resolve_video_format("auto")` prefers hardware HEVC
+    4:4:4, then hardware HEVC 4:2:0, then AVC 4:2:0 (`can_decode`).
   * manual override — `ISS_DECODER=<name>` / `--decoder <name>` forces a spec;
     `--list-decoders` prints the live matrix (run it on an Intel box to see
     whether `libav-hevc444` covers 4:4:4 via the generic DXVA-RExt path, making
@@ -28,6 +28,7 @@ import os
 import sys
 from dataclasses import dataclass
 from typing import Callable, Optional
+from ..video_formats import hevc_chroma
 
 log = logging.getLogger(__name__)
 
@@ -139,6 +140,9 @@ _REGISTRY: list[DecoderSpec] = [
     DecoderSpec("libav-hevc444-sw", "hevc", "444", ("*",), "software", 20,
                 available=lambda: True, build=_build_libav_hevc_sw,
                 note="libav software HEVC 4:4:4 — last resort; slow for live 4-tile streams"),
+    DecoderSpec("libav-hevc420", "hevc", "420", ("*",), "hardware", 60,
+                available=lambda: True, build=_build_libav_hevc,
+                note="HEVC 4:2:0: attempts platform HW decode; software fallback (availability is not a HW probe)"),
     DecoderSpec("libav-avc420", "avc", "420", ("*",), "hardware", 50,
                 available=lambda: True, build=_build_avc,
                 note="libav H.264 + platform hwaccel (HW by default; SW fallback, opt back to SW via ISS_AVC_HWACCEL=0)"),
@@ -163,7 +167,7 @@ def normalize_override(raw: Optional[str], codec: str) -> Optional[str]:
     if raw in ("auto", ""):
         return None
     if raw == "libav":
-        return "libav-hevc444" if codec == "hevc" else "libav-avc420"
+        return "libav-hevc" + hevc_chroma() if codec == "hevc" else "libav-avc420"
     return _ALIASES.get(raw, raw)
 
 
@@ -176,6 +180,8 @@ def all_specs() -> list[DecoderSpec]:
 def candidates(codec: str, chroma: Optional[str] = None) -> list[DecoderSpec]:
     """Specs for `codec` (optionally `chroma`) supported on this platform,
     best-first (hardware before software, then priority)."""
+    if codec == "hevc" and chroma is None:
+        chroma = hevc_chroma()
     out = [s for s in _REGISTRY
            if s.codec == codec and s.supported_here()
            and (chroma is None or s.chroma == chroma)]
@@ -186,18 +192,28 @@ def candidates(codec: str, chroma: Optional[str] = None) -> list[DecoderSpec]:
 def can_decode(codec: str, chroma: str, *, hardware_only: bool = False) -> bool:
     """True if any available decoder here handles (codec, chroma). Drives codec
     negotiation. Pass hardware_only=True to exclude software decoders."""
+    if codec == "hevc" and chroma == "420" and hardware_only:
+        from .hwcaps import supports_hevc420_hwdecode
+        return supports_hevc420_hwdecode()
     specs = candidates(codec, chroma)
     if hardware_only:
         specs = [s for s in specs if s.kind == "hardware"]
     return any(s.available() for s in specs)
 
 
-def select(codec: str, *, override: Optional[str] = None) -> Optional[DecoderSpec]:
+def select(codec: str, *, override: Optional[str] = None,
+           chroma: Optional[str] = None) -> Optional[DecoderSpec]:
     """Best available spec for `codec`, or `override` by name when supported.
     Returns None if nothing is available (caller falls back)."""
+    if codec == "hevc" and chroma is None:
+        chroma = hevc_chroma()
     if override:
         for s in _REGISTRY:
             if s.name == override:
+                if s.codec != codec or (chroma is not None and s.chroma != chroma):
+                    log.warning("decoder override %r does not match requested %s chroma — using auto",
+                                override, codec)
+                    break
                 if not s.supported_here():
                     log.warning("decoder override %r not supported on %s — using auto",
                                 override, sys.platform)
@@ -205,7 +221,7 @@ def select(codec: str, *, override: Optional[str] = None) -> Optional[DecoderSpe
                 return s
         else:
             log.warning("unknown decoder override %r — using auto", override)
-    for s in candidates(codec):
+    for s in candidates(codec, chroma):
         if s.available():
             return s
     return None
@@ -232,22 +248,27 @@ def build_best(codec: str, *, override: Optional[str], num_tiles: int, **opts):
 # ── codec negotiation (moved here from hwcaps to break the import cycle) ──
 
 def resolve_codec(choice: str) -> str:
-    """Resolve a `--codec` value to a concrete 'hevc' / 'avc'. 'auto' offers
-    HEVC when any 4:4:4 hardware decoder is available, else H.264 4:2:0.
+    """Resolve the codec; negotiation callers also need resolve_video_format."""
+    return resolve_video_format(choice)[0]
 
-    Priority: HW HEVC 4:4:4 > AVC 4:2:0. Software HEVC 4:4:4 is available
-    when HEVC is requested explicitly but does not drive auto negotiation.
 
-    Codec and decoder are orthogonal: call sites that derive a codec from a
-    decoder name (e.g. the TUI) must pass the resolved codec explicitly via
-    ISS_VIDEO_CODEC / --codec rather than relying on this function."""
+def resolve_video_format(choice: str) -> tuple[str, str]:
+    """Choose codec and chroma without mutating process configuration.
+
+    Auto prefers hardware HEVC 4:4:4, then hardware HEVC 4:2:0, then AVC.
+    An explicit chroma override restricts the HEVC formats considered.
+    """
     if choice != "auto":
-        return choice
-    if can_decode("hevc", "444", hardware_only=True):
-        log.info("codec=auto: a HEVC 4:4:4 hardware decoder is available -> hevc")
-        return "hevc"
-    log.info("codec=auto: no HEVC 4:4:4 hardware decoder -> avc (H.264 4:2:0)")
-    return "avc"
+        return choice, hevc_chroma() if choice == "hevc" else "420"
+    requested = hevc_chroma() if "ISS_HEVC_CHROMA" in os.environ else None
+    for chroma in ("444", "420"):
+        if requested is not None and requested != chroma:
+            continue
+        if can_decode("hevc", chroma, hardware_only=True):
+            log.info("codec=auto: hardware HEVC %s available -> hevc", chroma)
+            return "hevc", chroma
+    log.info("codec=auto: no hardware HEVC decoder -> avc (H.264 4:2:0)")
+    return "avc", "420"
 
 
 def describe() -> str:
@@ -268,4 +289,4 @@ def describe() -> str:
 
 
 __all__ = ["DecoderSpec", "all_specs", "candidates", "can_decode", "select",
-           "build_best", "normalize_override", "resolve_codec", "describe"]
+           "build_best", "normalize_override", "resolve_codec", "resolve_video_format", "describe"]

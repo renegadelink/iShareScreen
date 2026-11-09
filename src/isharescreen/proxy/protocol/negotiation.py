@@ -38,6 +38,7 @@ from .apple import (
 from .auth import AuthError, do_nonsrp_auth, do_srp_auth
 from .enc1103 import StreamCipher
 from .offers import create_offers, extract_canvas_dims
+from .media_diagnostics import log_media_reply, log_media_transport
 from .rfb import (
     HP_ENCODINGS_FULL,
     build_post_encryption_toggle, build_set_encodings,
@@ -868,6 +869,7 @@ def _read_until_enc1103(
                     p += 36
                 elif enc in (1010, 1011) and p + 2 <= len(init):
                     sz = struct.unpack(">H", init[p:p + 2])[0]
+                    log_media_reply(bytes(init[p:p + 2 + sz]))
                     p += 2 + sz
                 else:
                     break
@@ -884,7 +886,9 @@ def _read_until_enc1103(
     log.info("enc1103 OK")
 
     if pos < len(init):
-        cipher.decrypt_stream(bytes(init[pos:]))  # discard tail; we only want the side-effect of advancing the recv counter
+        messages, _ = cipher.decrypt_stream(bytes(init[pos:]))
+        for message in messages:
+            log_media_transport(message)
     return cipher
 
 
@@ -905,7 +909,9 @@ def _drain_through_cipher(
         pass
     sock.settimeout(15)
     if pre:
-        cipher.decrypt_stream(bytes(pre))  # discard tail; we only want the side-effect of advancing the recv counter
+        messages, _ = cipher.decrypt_stream(bytes(pre))
+        for message in messages:
+            log_media_transport(message)
 
 
 def _read_video_answer(
@@ -941,6 +947,7 @@ def _read_video_answer(
     msgs, _ = cipher.decrypt_stream(bytes(answer))
     canvas_seen: tuple[int, int, int] = (0, 0, 0)
     for msg in msgs:
+        log_media_transport(msg)
         log.debug("0x1c answer msg cmd=0x%02x len=%d", msg[0], len(msg))
         cw, ch, ct = extract_canvas_dims(msg)
         if cw and ch and canvas_seen == (0, 0, 0):
