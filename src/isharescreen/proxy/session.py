@@ -50,6 +50,7 @@ from .media.registry import resolve_codec
 from .media.quality_gate import TileVisState
 from .. import __version__ as _iss_version
 from .control import ControlServer
+from .rate_control import RCTL_INTERVAL_S, RateControl
 from .protocol.burst import BurstStarved, InitialBurst, gather_initial_burst
 from .protocol.negotiation import (
     AdvertiseDims,
@@ -524,6 +525,18 @@ class Session:
         # gray-outs). Off by default; ISS_LOG_LTR=1 re-enables it for LTRP
         # debugging. Acks-flowing is otherwise visible via the profile line.
         self._log_ltr_acks = os.environ.get("ISS_LOG_LTR") == "1"
+        # Receiver rate-control feedback (RTCP APP "RCTL", see rate_control.py):
+        # the host's encoder targets the bandwidth estimate it carries; without
+        # it the host holds a flat ~20-30 Mbps on a busy screen. Opt-in
+        # (ISS_RCTL=1): the higher rate it unlocks only pays off when this
+        # client can process it. ISS_RCTL_BWE=<kbps> pins the estimate instead
+        # of the adaptive one.
+        self._rctl_enabled = os.environ.get("ISS_RCTL", "0") == "1"
+        _pin = os.environ.get("ISS_RCTL_BWE", "").strip()
+        self._rctl_pinned_bwe: Optional[int] = (
+            min(int(_pin), 0xFFFF) if _pin.isdigit() else None
+        )
+        self._rctl: Optional[RateControl] = None
         # Dedup state for the misc-status (0x14) push log — only emit when
         # the cmd value changes, not on every repeat.
         self._last_misc_status_cmd: object = None
@@ -1679,6 +1692,9 @@ class Session:
             ("iss-tcp-rx", self._tcp_rx_loop),
             ("iss-tx", self._tx_loop),
         ]
+        if self._rctl_enabled:
+            self._rctl = RateControl(pinned_bwe_kbps=self._rctl_pinned_bwe)
+            targets.append(("iss-rctl", self._rctl_loop))
         # Note: there's no separate iss-audio-rx thread because Apple
         # rtcp-muxes audio onto _sock_ctrl (UDP 5900); the ctrl process
         # loop routes audio RTP to _handle_audio_rtp.
@@ -1742,6 +1758,31 @@ class Session:
                 log.debug("LTR ack sent: DONL=%d (tile 0)", donl)
         except OSError as e:
             log.debug("LTR ack send failed: %s", e)
+
+    def _rctl_loop(self) -> None:
+        """Send RCTL rate-control feedback every 50 ms on the video leg, as
+        Apple's viewer does. Same SRTCP context as the RRs and LTR acks."""
+        rctl = self._rctl
+        if rctl is None:
+            return
+        next_log = time.monotonic() + 2.0
+        while not self._stop_evt.wait(RCTL_INTERVAL_S):
+            enc = self._srtcp_enc
+            ssrc = self._our_video_ssrc
+            sock = self._sock_video
+            if enc is None or ssrc is None or sock is None:
+                continue
+            now = time.monotonic()
+            q = self._video_q
+            pkt = rctl.tick(ssrc, now, q.qsize() if q is not None else 0)
+            if pkt is not None:
+                try:
+                    sock.sendto(enc.protect(pkt), (self._dest_host, self._video_dest_port))
+                except OSError as e:
+                    log.debug("RCTL send failed: %s", e)
+            if now >= next_log:
+                next_log = now + 2.0
+                log.debug("%s", rctl.describe())
 
     def _dpb_trace(self, msg: str) -> None:
         """ISS_DPB_TRACE=1 diagnostic. Classify a libav 'Could not find
@@ -2335,6 +2376,9 @@ class Session:
 
             self._track_seq(ssrc, seq)
             self._note_unknown_ssrc(ssrc)
+            rctl = self._rctl
+            if rctl is not None and ssrc in self._ssrc_to_tile:
+                rctl.note_packet(ssrc, seq, ts, len(pkt), time.monotonic())
             self._queue_video_group_packet(ssrc, ts, seq, marker, payload)
 
             # Expire repair/no-marker holes even while the queue stays busy.
