@@ -815,7 +815,8 @@ Media RTCP is rtcp-muxed onto each media port (§10.4). Observed native-client f
 
 - Receiver Reports (PT 201) and SDES (PT 202) from the client; Sender Reports (PT 200) from the server;
 - **legacy Full-INTRA-request FIR (PT 192, RFC 2032)** to request a keyframe;
-- an application-defined packet (PT 204) with a numeric subtype (`5`) and an incrementing counter payload — an LTR-style per-frame acknowledgment.
+- an application-defined packet (PT 204) with a numeric subtype (`5`) and an incrementing counter payload — an LTR-style per-frame acknowledgment;
+- every 50 ms on the video port, independent of video arrival: an APP packet (PT 204, 46 bytes after SRTCP) named **`RCTL`** — AVConference's receiver rate-control feedback. Its 20-byte body is `85 00 00 04 · u16 echoed RTP timestamp (low 16 bits) · u32 0 · u16 ms since that packet arrived · u16 receiver clock (1/1024 s) · u16 one-way relative delay · u16 burst-loss<<12 | loss · u16 bandwidth estimate (kbps)`. The server's video encoder targets the bandwidth estimate: with it the encoder follows the estimate up to the u16 limit; without it the encoder holds a fixed rate (~20–30 Mbps) however busy the screen is.
 
 > A different interoperable client uses AVPF feedback instead: FIR (PT 206, FMT 4), PLI (PT 206, FMT 1), generic NACK (PT 205, FMT 1), an empty SR (PT 200), and an APP packet for long-term-reference acknowledgment. Servers accept both feedback styles. The exact server reference-selection policy on loss, and the APP/LTR acknowledgment semantics and cadence, are a **revision gap**.
 

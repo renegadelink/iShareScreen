@@ -7,7 +7,8 @@ plus an empty SR so the AVConference liveness check accepts us as a sender.
 Packet types used here:
     PT=200  Sender Report
     PT=201  Receiver Report
-    PT=204  Application-defined (Apple's LTR-ACK — subtype "5")
+    PT=204  Application-defined (Apple's LTR-ACK — subtype "5"; rate-control
+            feedback — name "RCTL")
     PT=205  Transport-layer feedback (NACK = FMT 1)
     PT=206  Payload-specific feedback (PLI = FMT 1, FIR = FMT 4)
 """
@@ -100,6 +101,57 @@ def build_rtcp_app_ltrp(sender_ssrc: int, ltr_id: int) -> bytes:
     )
 
 
+RCTL_NAME = 0x5243544C  # b"RCTL"
+
+
+def build_rtcp_app_rctl(
+    sender_ssrc: int,
+    *,
+    echo: int,
+    echo_delay_ms: int,
+    now_1024: int,
+    bwe_kbps: int,
+    owrd: int = 0,
+    burst_loss: int = 0,
+    loss: int = 0,
+) -> bytes:
+    """AVConference receiver rate-control feedback: RTCP APP named "RCTL".
+
+    Apple's Screen Sharing viewer sends one every 50 ms on the video port;
+    the host's video encoder targets the bandwidth estimate it carries.
+
+    Wire format (32 bytes pre-SRTCP, 46 bytes post-SRTCP):
+        [0]      0x80          V=2, P=0, subtype=0
+        [1]      0xcc          PT=204 (APP)
+        [2:4]    BE u16  7     length (7 32-bit words after header)
+        [4:8]    BE u32        sender SSRC (our video SSRC)
+        [8:12]   "RCTL"        APP name
+        [12]     0x85          media-control info header (0x80 | flags 5)
+        [13]     0x00
+        [14:16]  BE u16  4     info length in words - 1 (20-byte info)
+        [16:18]  BE u16        echo: low 16 bits of the newest video RTP ts
+        [18:22]  0
+        [22:24]  BE u16        ms since that packet arrived
+        [24:26]  BE u16        receiver clock, 1/1024 s
+        [26:28]  BE u16        one-way relative delay (0 = not measured)
+        [28:30]  BE u16        burst_loss << 12 | loss (windowed, percent)
+        [30:32]  BE u16        receiver bandwidth estimate, kbps
+    """
+    return (
+        struct.pack(">BBHII", 0x80, 204, 7, sender_ssrc & 0xFFFFFFFF, RCTL_NAME)
+        + struct.pack(">BBH", 0x85, 0, 4)
+        + struct.pack(">HI", echo & 0xFFFF, 0)
+        + struct.pack(
+            ">HHHHH",
+            min(max(echo_delay_ms, 0), 0xFFFF),
+            now_1024 & 0xFFFF,
+            owrd & 0xFFFF,
+            (min(max(burst_loss, 0), 15) << 12) | (min(max(loss, 0), 0xFFF)),
+            min(max(bwe_kbps, 0), 0xFFFF),
+        )
+    )
+
+
 def build_empty_sr(sender_ssrc: int) -> bytes:
     """Empty Sender Report so AVConference accepts us as a live sender."""
     now = time.time()
@@ -182,6 +234,7 @@ __all__ = [
     "build_pli",
     "build_rr",
     "build_rtcp_app_ltrp",
+    "build_rtcp_app_rctl",
     "compound_with_rr",
     "parse_sr_arrivals",
 ]
