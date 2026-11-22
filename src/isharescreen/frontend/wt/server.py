@@ -46,7 +46,7 @@ from aioquic.quic.events import ProtocolNegotiated, QuicEvent
 
 from ...proxy.session import Session, SessionConfig
 from ...proxy.media.avc_nalu import au_is_keyframe, au_has_sps
-from ...proxy.media.avc import _patch_avc_sps_dpb
+from ...proxy.media.avc import _patch_avc_sps_dpb, _sps_signal_no_reorder
 from .audio import OpusEncoder
 from .capsule import CapsuleType, H3Capsule, H3CapsuleDecoder
 from .cert import write_cert, trust_cert_in_keychain, is_cert_trusted
@@ -70,6 +70,19 @@ _DEBUG_SETTINGS = os.environ.get("ISS_WT_DEBUG_SETTINGS", "0") == "1"
 # forwarded SPS too so the browser's decoder sizes its DPB to hold Apple's full
 # reference set. ISS_BROWSER_SPS_PATCH=0 restores the old (raw) behavior for A/B.
 _BROWSER_SPS_PATCH = os.environ.get("ISS_BROWSER_SPS_PATCH", "1") != "0"
+# Tell the browser's decoder that the stream never reorders, so it outputs each
+# frame as soon as it is decoded instead of holding back up to 16 of them (see
+# _sps_signal_no_reorder). ISS_BROWSER_NO_REORDER=0 turns it off for A/B.
+_BROWSER_NO_REORDER = os.environ.get("ISS_BROWSER_NO_REORDER", "1") != "0"
+
+
+def _browser_sps(sps: bytes) -> bytes:
+    """The SPS as sent to browsers."""
+    if _BROWSER_SPS_PATCH:
+        sps = _patch_avc_sps_dpb(sps)
+    if _BROWSER_NO_REORDER:
+        sps = _sps_signal_no_reorder(sps)
+    return sps
 
 # --- HTTP/3 SETTINGS codepoints for WebTransport ----------------------
 # aioquic 1.3 only knows the draft-02 ENABLE_WEBTRANSPORT (0x2b603742) and the
@@ -1016,8 +1029,8 @@ class WebTransportBridge:
         """WebCodecs codec id 'avc1.PPCCLL' from the SPS (profile/constraint/
         level bytes). Falls back to High@5.0 if the SPS isn't available yet."""
         sps, _ = session.video_params()
-        if sps and _BROWSER_SPS_PATCH:
-            sps = _patch_avc_sps_dpb(sps)
+        if sps:
+            sps = _browser_sps(sps)
         if len(sps) >= 4:
             return "avc1." + sps[1:4].hex()
         return "avc1.640032"
@@ -1054,8 +1067,7 @@ class WebTransportBridge:
             # 'Decoding error' on every keyframe.
             sps, all_pps = session.video_params()
             if sps:
-                if _BROWSER_SPS_PATCH:
-                    sps = _patch_avc_sps_dpb(sps)
+                sps = _browser_sps(sps)
                 pps = next(iter(all_pps.values()), b"")
                 au_bytes = (b"\x00\x00\x00\x01" + sps
                             + b"\x00\x00\x00\x01" + pps + au_bytes)
