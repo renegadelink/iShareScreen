@@ -20,15 +20,18 @@ browser passes it to `serverCertificateHashes` and skips CA validation.
 from __future__ import annotations
 
 import asyncio
+import hmac
 import json
 import logging
 import os
+import secrets
 import socket
 import threading
 import time
 from collections import deque
 from pathlib import Path
 from typing import Optional
+from urllib.parse import parse_qs
 
 from aiohttp import web
 from aioquic.asyncio.protocol import QuicConnectionProtocol
@@ -405,14 +408,23 @@ class _BridgeProtocol(QuicConnectionProtocol):
             method = headers.get(b":method", b"").decode()
             path = headers.get(b":path", b"").decode()
             protocol = headers.get(b":protocol", b"").decode()
+            base_path, _, query = path.partition("?")
+            # The query carries the viewer token: log the path without it.
             log.info(
                 "H3 HEADERS stream=%d method=%s path=%s protocol=%s",
-                event.stream_id, method, path, protocol,
+                event.stream_id, method, base_path, protocol,
             )
-            base_path, _, query = path.partition("?")
             if (method == "CONNECT"
                     and protocol in ("webtransport", "webtransport-h3")
                     and base_path == "/wt"):
+                # Only the page that was given this run's token may watch or
+                # control the Mac. Without it anyone who can reach the port
+                # could open a session.
+                token = parse_qs(query).get("token", [""])[0]
+                if not self._bridge.check_token(token):
+                    log.warning("refused a WebTransport viewer without a valid token")
+                    self._send_status(event.stream_id, 403, b"")
+                    return
                 # draft-02 uses :protocol=webtransport; draft-08+ (Safari) uses
                 # webtransport-h3. Accept both. The client requests the single-
                 # long-lived-stream transport via ?transport=single (Safari does,
@@ -578,6 +590,10 @@ class WebTransportBridge:
     ) -> None:
         self._config = config
         self._port = port
+        # Random per run. Printed only inside the page URL's #fragment, which
+        # browsers never send to a server; the page presents it to open the
+        # WebTransport session and to use /stats and /log.
+        self.token = secrets.token_urlsafe(24)
         # Opt-in: install our self-signed cert into the macOS login
         # keychain so Safari (which ignores serverCertificateHashes) can
         # do WebTransport. Set True once trusted — the page then connects
@@ -705,7 +721,7 @@ class WebTransportBridge:
         # does not. localhost also matches the self-signed cert (cert.py issues
         # it for localhost / 127.0.0.1, not the LAN address), and the dual-stack
         # listeners above exist precisely so localhost (::1 / 127.0.0.1) works.
-        url = f"http://localhost:{self._port}/"
+        url = f"http://localhost:{self._port}/#token={self.token}"
         log.info("WebTransport bridge ready:")
         log.info("  open this URL in Chrome/Edge/Firefox: %s", url)
         log.info("  (HTML on tcp/%d, WebTransport on udp/%d)",
@@ -755,9 +771,14 @@ class WebTransportBridge:
                 headers=nocache,
             )
 
+        def token_ok(req: web.Request) -> bool:
+            return self.check_token(req.headers.get("x-iss-token", ""))
+
         async def log_event(req: web.Request) -> web.Response:
             """Browser-side error/log relay so console messages are
             visible to the iss operator."""
+            if not token_ok(req):
+                return web.Response(status=403, headers=nocache)
             try:
                 payload = await req.json()
                 level = payload.get("level", "info")
@@ -775,6 +796,8 @@ class WebTransportBridge:
             (last_publish_age, per-tile loss, hw decoder, viewers).
             Browser-side metrics like `decode_fps` and `gray_frac`
             are owned by the page and not duplicated here."""
+            if not token_ok(req):
+                return web.Response(status=403, headers=nocache)
             sess = self._session
             decoder = "?"
             rcv = lost = 0
@@ -820,6 +843,12 @@ class WebTransportBridge:
         finally:
             self._teardown_session()
         return 0
+
+    def check_token(self, presented) -> bool:
+        """True if `presented` is this run's viewer token."""
+        if not isinstance(presented, str) or not presented:
+            return False
+        return hmac.compare_digest(presented.encode(), self.token.encode())
 
     # -- viewer management --------------------------------------------
 

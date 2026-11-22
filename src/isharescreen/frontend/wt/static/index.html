@@ -139,6 +139,20 @@
 </div>
 <script>
 "use strict";
+// This run's viewer token. iss prints the page URL with #token=…; the
+// fragment never reaches a server. Keep it for reloads of this tab, and take
+// it out of the address bar so it doesn't end up in screenshots or screen
+// shares.
+const ISS_TOKEN = (() => {
+  let t = "";
+  try { t = new URLSearchParams(location.hash.slice(1)).get("token") || ""; } catch (e) {}
+  try {
+    if (t) sessionStorage.setItem("iss_token", t);
+    else t = sessionStorage.getItem("iss_token") || "";
+  } catch (e) {}
+  if (location.hash) history.replaceState(null, "", location.pathname + location.search);
+  return t;
+})();
 
 const status = document.getElementById("status");
 const stage = document.getElementById("stage");
@@ -218,7 +232,7 @@ function srvLog(level, msg) {
   console[level === "error" ? "error" : "log"]("[srvlog]", msg);
   fetch("/log", {
     method: "POST",
-    headers: {"content-type": "application/json"},
+    headers: {"content-type": "application/json", "x-iss-token": ISS_TOKEN},
     body: JSON.stringify({level, msg}),
     keepalive: true,
   }).catch(() => {});
@@ -439,11 +453,17 @@ async function main() {
   // cert via serverCertificateHashes. Safari (with --trust-cert-for-safari)
   // ignores hashes and validates against the keychain-trusted cert, so we
   // omit the option entirely for it.
-  const wtUrl = `https://${location.host}/wt` +
-    (singleStream ? "?transport=single" : "");
-  setStatus("opening WebTransport…");
+  const wtBase = `https://${location.host}/wt`;
+  const wtUrl = `${wtBase}?token=${encodeURIComponent(ISS_TOKEN)}` +
+    (singleStream ? "&transport=single" : "");
+  if (!ISS_TOKEN) {
+    setStatus("this page needs the link iss printed (it ends with #token=…)", "err");
+  } else {
+    setStatus("opening WebTransport…");
+  }
   const useHashes = !(isSafari && safariTrusted);
-  srvLog("info", `WT connect: ${wtUrl} ${useHashes ? "hash=" + certHash : "(keychain trust)"}`);
+  srvLog("info", `WT connect: ${wtBase} ${singleStream ? "single" : "per-frame"} ` +
+    `${useHashes ? "hash=" + certHash : "(keychain trust)"}`);
   const mkWt = () => useHashes
     ? new WebTransport(wtUrl, {
         serverCertificateHashes: [{
@@ -480,7 +500,8 @@ async function main() {
       try { wt.close(); } catch (_) {}
       wt = null;
       if (attempt === RETRIES) {
-        setStatus(`${msg} — giving up after ${RETRIES} attempts`, "err");
+        setStatus(`${msg} — giving up after ${RETRIES} attempts` +
+          (ISS_TOKEN ? "" : " (open the link iss printed; it ends with #token=…)"), "err");
         return;
       }
       // Backoff: 300ms, 600ms, 1.2s, 2.4s — let the browser/QUIC path settle.
@@ -947,7 +968,7 @@ async function main() {
   let serverStats = {loss_pct: 0, stuck_s: 0, decoder: "", encoder: ""};
   setInterval(async () => {
     try {
-      const r = await fetch("/stats", {cache: "no-store"});
+      const r = await fetch("/stats", {cache: "no-store", headers: {"x-iss-token": ISS_TOKEN}});
       if (r.ok) serverStats = await r.json();
     } catch (e) { /* keep last */ }
   }, 1000);
