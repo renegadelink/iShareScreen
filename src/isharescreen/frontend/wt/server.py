@@ -942,8 +942,16 @@ class WebTransportBridge:
                     target=self._gate_pump_loop, name="wt-gate-pump", daemon=True)
                 self._gate_thread.start()
         except Exception as e:
-            log.error("session start failed: %s — retrying in 1.5 s", e)
             self._session_starting = False
+            # A refused login or a session the Mac doesn't offer won't change
+            # on a retry, and every retry of a wrong password is one more
+            # failed login on the Mac (enough of them lock the account).
+            from ...proxy.protocol.auth import AuthError
+            from ...proxy.protocol.negotiation import SessionSelectError
+            if isinstance(e, (AuthError, SessionSelectError)):
+                log.error("session start failed, not retrying: %s", e)
+                return
+            log.error("session start failed: %s — retrying in 1.5 s", e)
             # Auto-retry: schedule another start attempt while we still
             # have at least one viewer connected. Apple's burst is
             # transient — VPS/SPS/PPS sometimes don't survive the first
