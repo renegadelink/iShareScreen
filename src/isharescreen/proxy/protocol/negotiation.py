@@ -349,6 +349,11 @@ def _build_ss_cmd2_body(
     return body
 
 
+class SessionSelectError(RuntimeError):
+    """The Mac didn't offer the session that was asked for. Retrying won't
+    change that, so callers should report it instead of trying again."""
+
+
 def _read_ss_prompt(sock: socket.socket) -> Optional[tuple[int, str]]:
     """Peek 4 bytes after ServerInit. If they're the SessionSelect magic, read the
     rest of the 76-byte prompt and return `(flags, console_user)`. If
@@ -723,7 +728,25 @@ def connect_and_negotiate(
     # logged in. Peek non-destructively — if absent, the bytes stay buffered
     # for the normal handshake below; if present, route by flag (default
     # share-console = view their session; --alt-session = log in separately).
-    if _peek_ss_prompt(sock):
+    session_offered = _peek_ss_prompt(sock)
+    if alt_session and not session_offered:
+        # No SessionSelect prompt: nobody else is logged in at the console
+        # (the Mac shows its login window) or the auth user is the console
+        # user. Carrying on would stream the CONSOLE although a separate
+        # session was asked for, and keys meant for "my own session" would go
+        # into whatever is on the Mac's screen, e.g. the login window of
+        # another account. Refuse before anything is shared.
+        try:
+            sock.close()
+        except Exception:
+            pass
+        raise SessionSelectError(
+            "--alt-session: the Mac did not offer a separate session. It is "
+            "showing its login window, or you are the user at its screen (then "
+            "connect without --alt-session to see your session). Nothing was "
+            "shared."
+        )
+    if session_offered:
         # Neither mode was forced and the launcher gave us a way to ask the
         # user (a different user is logged in at the host's console): prompt
         # now for share-console vs alt-session and route on their answer.
